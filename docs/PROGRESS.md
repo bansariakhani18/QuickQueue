@@ -3,11 +3,12 @@
 ## Repository State
 
 - **Branch:** `main`
-- **HEAD:** `fd16cb1 chore: establish database foundation and build workflow`
+- **HEAD:** `62dacb6 feat: implement authentication core (Phase 3)`
 - **Commits (in order):**
   1. `56aca30 docs: add frozen QuickQueue V1 SRS`
   2. `abee3a6 chore: establish QuickQueue project foundation`
   3. `fd16cb1 chore: establish database foundation and build workflow`
+  4. `62dacb6 feat: implement authentication core (Phase 3)`
 
 ### Working Tree
 
@@ -55,18 +56,27 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 1 requirements:
 
 **Deviation from Playbook:** Playbook specifies default port 4000; code uses 3000 to match the committed `.env.example` (`BACKEND_PORT=3000`). This is a deliberate local configuration choice, not an error.
 
-### Not Implemented (Phase 2+)
+### Phase 3 — Authentication Core: ✅ COMPLETE
+
+Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
+- POST /auth/signup: creates restaurant, sets session cookie ✅
+- POST /auth/login: validates credentials, sets session cookie ✅
+- POST /auth/logout: clears session cookie ✅
+- requireAuth middleware: validates session + sessionVersion against DB ✅
+- cookie-session with HTTP-only, signed cookie ✅
+- 11 tests: signup (3), login (4), logout (1), middleware (3) ✅
+- Typecheck passes ✅
+- Build passes ✅
+
+### Not Implemented (Phase 4+)
 
 The following are **not** implemented — do not assume they exist:
-- Authentication (Phase 3)
-- Password reset (Phase 4)
 - CSRF / rate limiting (Phase 5)
 - Order CRUD / tenant isolation (Phase 6)
 - Order status transitions (Phase 7)
 - Notification logic (Phase 8+)
 - WhatsApp integration / webhooks (Phase 12+)
 - Frontend product UI (Phase 17+)
-- Tests
 - Phone number scrubbing / retention cleanup (Phase 11)
 
 ---
@@ -96,8 +106,8 @@ The following are **not** implemented — do not assume they exist:
 | Phase 0 — Foundation | ✅ Complete | Project structure, Docker, workspaces |
 | Phase 1 — Backend Skeleton | ✅ Complete | Express + TypeScript + health check verified |
 | Phase 2 — Database Schema | ✅ Complete | Schema, migration, verified against live DB |
-| Phase 3 — Authentication Core | ⬜ Not started | Next phase to implement |
-| Phase 4 — Password Reset | ⬜ Not started | |
+| Phase 3 — Authentication Core | ✅ Complete | Auth routes + middleware + 11 tests |
+| Phase 4 — Password Reset | ⬜ Not started | Next phase to implement |
 | Phase 5 — CSRF, Rate Limiting, Health+DB | ⬜ Not started | |
 | Phase 6 — Order CRUD & Tenant Isolation | ⬜ Not started | |
 | Phase 7 — Order Status Transitions | ⬜ Not started | |
@@ -121,6 +131,4 @@ The following are **not** implemented — do not assume they exist:
 
 ## Next Step
 
-**Phase 3 — Authentication Core** per `QuickQueue_Build_Playbook.md`.
-
-(Phase 2 was completed alongside Phase 0 in the foundation commit.)
+**Phase 4 — Password Reset** per `QuickQueue_Build_Playbook.md`.

@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import express from 'express'
 import request from 'supertest'
+import { createHash, randomBytes } from 'node:crypto'
 import { app } from '../app.js'
 import { sessionMiddleware, requireAuth } from '../auth.js'
 import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
+
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
+}
 
 const testApp = express()
 testApp.use(express.json())
@@ -155,6 +160,216 @@ describe('Auth', () => {
 
       expect(res.status).toBe(200)
       expect(res.body.message).toBe('protected resource')
+    })
+  })
+
+  describe('POST /auth/password-reset/request', () => {
+    it('should return success even for non-existent email', async () => {
+      const res = await request(app)
+        .post('/auth/password-reset/request')
+        .send({ email: 'nonexistent@example.com' })
+
+      expect(res.status).toBe(200)
+      expect(res.body.message).toContain('reset link has been sent')
+    })
+
+    it('should store a token hash on the restaurant record', async () => {
+      const res = await request(app)
+        .post('/auth/password-reset/request')
+        .send({ email: testEmail })
+
+      expect(res.status).toBe(200)
+
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { email: testEmail },
+      })
+      expect(restaurant).not.toBeNull()
+      expect(restaurant!.resetTokenHash).not.toBeNull()
+      expect(restaurant!.resetTokenExpiresAt).not.toBeNull()
+      expect(restaurant!.resetTokenExpiresAt!.getTime()).toBeGreaterThan(Date.now())
+    })
+  })
+
+  describe('POST /auth/password-reset/confirm', () => {
+    it('should reset password with a valid token', async () => {
+      const rawToken = randomBytes(32).toString('hex')
+      const tokenHash = hashToken(rawToken)
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { email: testEmail },
+      })
+      await prisma.restaurant.update({
+        where: { id: restaurant!.id },
+        data: { resetTokenHash: tokenHash, resetTokenExpiresAt: expiresAt },
+      })
+
+      const res = await request(app)
+        .post('/auth/password-reset/confirm')
+        .send({ token: rawToken, newPassword: 'newpassword456' })
+
+      expect(res.status).toBe(200)
+      expect(res.body.message).toBe('Password has been reset')
+
+      const updated = await prisma.restaurant.findUnique({
+        where: { email: testEmail },
+      })
+      expect(updated!.resetTokenHash).toBeNull()
+      expect(updated!.resetTokenExpiresAt).toBeNull()
+
+      const loginRes = await request(app)
+        .post('/auth/login')
+        .send({ email: testEmail, password: 'newpassword456' })
+      expect(loginRes.status).toBe(200)
+    })
+
+    it('should reject an expired token', async () => {
+      const rawToken = randomBytes(32).toString('hex')
+      const tokenHash = hashToken(rawToken)
+      const expiredDate = new Date(Date.now() - 1000)
+
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { email: testEmail },
+      })
+      await prisma.restaurant.update({
+        where: { id: restaurant!.id },
+        data: { resetTokenHash: tokenHash, resetTokenExpiresAt: expiredDate },
+      })
+
+      const res = await request(app)
+        .post('/auth/password-reset/confirm')
+        .send({ token: rawToken, newPassword: 'newpassword789' })
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toContain('Invalid or expired')
+    })
+
+    it('should reject a reused (already-consumed) token', async () => {
+      const rawToken = randomBytes(32).toString('hex')
+      const tokenHash = hashToken(rawToken)
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { email: testEmail },
+      })
+      await prisma.restaurant.update({
+        where: { id: restaurant!.id },
+        data: { resetTokenHash: tokenHash, resetTokenExpiresAt: expiresAt },
+      })
+
+      const firstRes = await request(app)
+        .post('/auth/password-reset/confirm')
+        .send({ token: rawToken, newPassword: 'reusedpassword1' })
+      expect(firstRes.status).toBe(200)
+
+      const secondRes = await request(app)
+        .post('/auth/password-reset/confirm')
+        .send({ token: rawToken, newPassword: 'reusedpassword2' })
+      expect(secondRes.status).toBe(400)
+      expect(secondRes.body.error).toContain('Invalid or expired')
+    })
+
+    it('should invalidate a prior token when a second reset is requested', async () => {
+      const rawToken1 = randomBytes(32).toString('hex')
+      const tokenHash1 = hashToken(rawToken1)
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { email: testEmail },
+      })
+      await prisma.restaurant.update({
+        where: { id: restaurant!.id },
+        data: { resetTokenHash: tokenHash1, resetTokenExpiresAt: expiresAt },
+      })
+
+      await request(app)
+        .post('/auth/password-reset/request')
+        .send({ email: testEmail })
+
+      const res = await request(app)
+        .post('/auth/password-reset/confirm')
+        .send({ token: rawToken1, newPassword: 'shouldfail123' })
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toContain('Invalid or expired')
+    })
+
+    it('should invalidate existing sessions via sessionVersion increment', async () => {
+      const loginRes = await request(app)
+        .post('/auth/login')
+        .send({ email: testEmail, password: 'reusedpassword1' })
+
+      const cookie = extractCookies(loginRes)
+      expect(loginRes.status).toBe(200)
+
+      const sessionCheck = await request(testApp)
+        .get('/protected')
+        .set('Cookie', cookie)
+      expect(sessionCheck.status).toBe(200)
+
+      const rawToken = randomBytes(32).toString('hex')
+      const tokenHash = hashToken(rawToken)
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { email: testEmail },
+      })
+      await prisma.restaurant.update({
+        where: { id: restaurant!.id },
+        data: { resetTokenHash: tokenHash, resetTokenExpiresAt: expiresAt },
+      })
+
+      const resetRes = await request(app)
+        .post('/auth/password-reset/confirm')
+        .send({ token: rawToken, newPassword: 'finalpassword789' })
+      expect(resetRes.status).toBe(200)
+
+      const staleSessionCheck = await request(testApp)
+        .get('/protected')
+        .set('Cookie', cookie)
+      expect(staleSessionCheck.status).toBe(401)
+      expect(staleSessionCheck.body.error).toBe('Session invalidated')
+    })
+
+    it('should reject concurrent duplicate token consumption', async () => {
+      const rawToken = randomBytes(32).toString('hex')
+      const tokenHash = hashToken(rawToken)
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { email: testEmail },
+      })
+      await prisma.restaurant.update({
+        where: { id: restaurant!.id },
+        data: { resetTokenHash: tokenHash, resetTokenExpiresAt: expiresAt },
+      })
+
+      const [resA, resB] = await Promise.all([
+        request(app)
+          .post('/auth/password-reset/confirm')
+          .send({ token: rawToken, newPassword: 'concurrent1' }),
+        request(app)
+          .post('/auth/password-reset/confirm')
+          .send({ token: rawToken, newPassword: 'concurrent2' }),
+      ])
+
+      const statuses = [resA.status, resB.status].sort()
+      expect(statuses).toEqual([200, 400])
+
+      const updated = await prisma.restaurant.findUnique({
+        where: { email: testEmail },
+      })
+      expect(updated!.resetTokenHash).toBeNull()
+      expect(updated!.resetTokenExpiresAt).toBeNull()
+
+      const login1 = await request(app)
+        .post('/auth/login')
+        .send({ email: testEmail, password: 'concurrent1' })
+      const login2 = await request(app)
+        .post('/auth/login')
+        .send({ email: testEmail, password: 'concurrent2' })
+      const loginStatuses = [login1.status, login2.status].sort()
+      expect(loginStatuses).toEqual([200, 401])
     })
   })
 })
