@@ -1,12 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import express from 'express'
 import request from 'supertest'
 import { createHash, randomBytes } from 'node:crypto'
 import { app } from '../app.js'
 import { sessionMiddleware, requireAuth } from '../auth.js'
+import { clearRateLimitStore } from '../rateLimit.js'
 import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
+const ORIGIN = 'http://localhost:5173'
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
@@ -31,6 +33,8 @@ describe('Auth', () => {
   const testPassword = 'password123'
   const testName = 'Test Restaurant'
 
+  beforeEach(clearRateLimitStore)
+
   beforeAll(async () => {
     await prisma.$connect()
   })
@@ -44,6 +48,7 @@ describe('Auth', () => {
     it('should create a new restaurant and set session cookie', async () => {
       const res = await request(app)
         .post('/auth/signup')
+        .set('Origin', ORIGIN)
         .send({ name: testName, email: testEmail, password: testPassword })
 
       expect(res.status).toBe(201)
@@ -56,6 +61,7 @@ describe('Auth', () => {
     it('should reject duplicate email', async () => {
       const res = await request(app)
         .post('/auth/signup')
+        .set('Origin', ORIGIN)
         .send({ name: testName, email: testEmail, password: testPassword })
 
       expect(res.status).toBe(409)
@@ -65,6 +71,7 @@ describe('Auth', () => {
     it('should reject missing fields', async () => {
       const res = await request(app)
         .post('/auth/signup')
+        .set('Origin', ORIGIN)
         .send({ name: testName })
 
       expect(res.status).toBe(400)
@@ -76,6 +83,7 @@ describe('Auth', () => {
     it('should login with valid credentials and set session cookie', async () => {
       const res = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail, password: testPassword })
 
       expect(res.status).toBe(200)
@@ -87,6 +95,7 @@ describe('Auth', () => {
     it('should reject wrong password', async () => {
       const res = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail, password: 'wrongpassword' })
 
       expect(res.status).toBe(401)
@@ -96,6 +105,7 @@ describe('Auth', () => {
     it('should reject non-existent email', async () => {
       const res = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: 'nonexistent@example.com', password: testPassword })
 
       expect(res.status).toBe(401)
@@ -105,6 +115,7 @@ describe('Auth', () => {
     it('should reject missing fields', async () => {
       const res = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail })
 
       expect(res.status).toBe(400)
@@ -116,12 +127,14 @@ describe('Auth', () => {
     it('should clear session cookie', async () => {
       const loginRes = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail, password: testPassword })
 
       const cookie = extractCookies(loginRes)
 
       const logoutRes = await request(app)
         .post('/auth/logout')
+        .set('Origin', ORIGIN)
         .set('Cookie', cookie)
 
       expect(logoutRes.status).toBe(200)
@@ -150,6 +163,7 @@ describe('Auth', () => {
     it('should accept request with valid session', async () => {
       const loginRes = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail, password: testPassword })
 
       const cookie = extractCookies(loginRes)
@@ -167,6 +181,7 @@ describe('Auth', () => {
     it('should return success even for non-existent email', async () => {
       const res = await request(app)
         .post('/auth/password-reset/request')
+        .set('Origin', ORIGIN)
         .send({ email: 'nonexistent@example.com' })
 
       expect(res.status).toBe(200)
@@ -176,6 +191,7 @@ describe('Auth', () => {
     it('should store a token hash on the restaurant record', async () => {
       const res = await request(app)
         .post('/auth/password-reset/request')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail })
 
       expect(res.status).toBe(200)
@@ -206,6 +222,7 @@ describe('Auth', () => {
 
       const res = await request(app)
         .post('/auth/password-reset/confirm')
+        .set('Origin', ORIGIN)
         .send({ token: rawToken, newPassword: 'newpassword456' })
 
       expect(res.status).toBe(200)
@@ -219,6 +236,7 @@ describe('Auth', () => {
 
       const loginRes = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail, password: 'newpassword456' })
       expect(loginRes.status).toBe(200)
     })
@@ -238,6 +256,7 @@ describe('Auth', () => {
 
       const res = await request(app)
         .post('/auth/password-reset/confirm')
+        .set('Origin', ORIGIN)
         .send({ token: rawToken, newPassword: 'newpassword789' })
 
       expect(res.status).toBe(400)
@@ -259,11 +278,13 @@ describe('Auth', () => {
 
       const firstRes = await request(app)
         .post('/auth/password-reset/confirm')
+        .set('Origin', ORIGIN)
         .send({ token: rawToken, newPassword: 'reusedpassword1' })
       expect(firstRes.status).toBe(200)
 
       const secondRes = await request(app)
         .post('/auth/password-reset/confirm')
+        .set('Origin', ORIGIN)
         .send({ token: rawToken, newPassword: 'reusedpassword2' })
       expect(secondRes.status).toBe(400)
       expect(secondRes.body.error).toContain('Invalid or expired')
@@ -284,10 +305,12 @@ describe('Auth', () => {
 
       await request(app)
         .post('/auth/password-reset/request')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail })
 
       const res = await request(app)
         .post('/auth/password-reset/confirm')
+        .set('Origin', ORIGIN)
         .send({ token: rawToken1, newPassword: 'shouldfail123' })
 
       expect(res.status).toBe(400)
@@ -297,6 +320,7 @@ describe('Auth', () => {
     it('should invalidate existing sessions via sessionVersion increment', async () => {
       const loginRes = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail, password: 'reusedpassword1' })
 
       const cookie = extractCookies(loginRes)
@@ -321,6 +345,7 @@ describe('Auth', () => {
 
       const resetRes = await request(app)
         .post('/auth/password-reset/confirm')
+        .set('Origin', ORIGIN)
         .send({ token: rawToken, newPassword: 'finalpassword789' })
       expect(resetRes.status).toBe(200)
 
@@ -347,9 +372,11 @@ describe('Auth', () => {
       const [resA, resB] = await Promise.all([
         request(app)
           .post('/auth/password-reset/confirm')
+          .set('Origin', ORIGIN)
           .send({ token: rawToken, newPassword: 'concurrent1' }),
         request(app)
           .post('/auth/password-reset/confirm')
+          .set('Origin', ORIGIN)
           .send({ token: rawToken, newPassword: 'concurrent2' }),
       ])
 
@@ -364,12 +391,94 @@ describe('Auth', () => {
 
       const login1 = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail, password: 'concurrent1' })
       const login2 = await request(app)
         .post('/auth/login')
+        .set('Origin', ORIGIN)
         .send({ email: testEmail, password: 'concurrent2' })
       const loginStatuses = [login1.status, login2.status].sort()
       expect(loginStatuses).toEqual([200, 401])
+    })
+  })
+
+  describe('Origin validation (FR-009)', () => {
+    it('should reject state-changing request from disallowed origin', async () => {
+      const res = await request(app)
+        .post('/auth/login')
+        .set('Origin', 'https://evil.example.com')
+        .send({ email: testEmail, password: testPassword })
+
+      expect(res.status).toBe(403)
+      expect(res.body.error).toBe('Origin not allowed')
+    })
+
+    it('should allow state-changing request from allowed origin', async () => {
+      const uniqueEmail = `origin-${Date.now()}@example.com`
+      await request(app)
+        .post('/auth/signup')
+        .set('Origin', ORIGIN)
+        .send({ name: 'Origin Test', email: uniqueEmail, password: 'pass123' })
+
+      const res = await request(app)
+        .post('/auth/login')
+        .set('Origin', ORIGIN)
+        .send({ email: uniqueEmail, password: 'pass123' })
+
+      expect(res.status).toBe(200)
+    })
+
+    it('should allow GET requests without origin header', async () => {
+      const res = await request(app).get('/health')
+      expect(res.status).toBe(200)
+    })
+  })
+
+  describe('Rate limiting (FR-008)', () => {
+    it('should block login after exceeding rate limit', async () => {
+      const uniqueEmail = `ratelimit-${Date.now()}@example.com`
+
+      for (let i = 0; i < 5; i++) {
+        await request(app)
+          .post('/auth/login')
+          .set('Origin', ORIGIN)
+          .send({ email: uniqueEmail, password: 'wrong' })
+      }
+
+      const res = await request(app)
+        .post('/auth/login')
+        .set('Origin', ORIGIN)
+        .send({ email: uniqueEmail, password: 'wrong' })
+
+      expect(res.status).toBe(429)
+      expect(res.body.error).toContain('Too many requests')
+    })
+
+    it('should block password-reset-request after exceeding rate limit', async () => {
+      const uniqueEmail = `rl-reset-${Date.now()}@example.com`
+
+      for (let i = 0; i < 5; i++) {
+        await request(app)
+          .post('/auth/password-reset/request')
+          .set('Origin', ORIGIN)
+          .send({ email: uniqueEmail })
+      }
+
+      const res = await request(app)
+        .post('/auth/password-reset/request')
+        .set('Origin', ORIGIN)
+        .send({ email: uniqueEmail })
+
+      expect(res.status).toBe(429)
+      expect(res.body.error).toContain('Too many requests')
+    })
+  })
+
+  describe('Health check with DB (NFR-015)', () => {
+    it('should return 200 when database is reachable', async () => {
+      const res = await request(app).get('/health')
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('ok')
     })
   })
 })
