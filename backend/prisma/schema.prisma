@@ -1,0 +1,145 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Restaurant {
+  id                  String               @id @default(uuid())
+  name                String
+  email               String               @unique
+  passwordHash        String               @map("password_hash")
+  status              RestaurantStatus     @default(ACTIVE)
+  sessionVersion      Int                  @default(1) @map("session_version")
+  resetTokenHash      String?              @map("reset_token_hash")
+  resetTokenExpiresAt DateTime?            @map("reset_token_expires_at")
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  deactivatedAt       DateTime?            @map("deactivated_at")
+  optOuts             NotificationOptOut[]
+  orders              Order[]
+  whatsappConnection  WhatsAppConnection?
+
+  @@map("restaurants")
+}
+
+model WhatsAppConnection {
+  id                   String           @id @default(uuid())
+  restaurantId         String           @unique @map("restaurant_id")
+  wabaId               String?          @map("waba_id")
+  phoneNumberId        String?          @map("phone_number_id")
+  approvedDisplayName  String?          @map("approved_display_name")
+  connectionStatus     ConnectionStatus @default(NOT_CONNECTED) @map("connection_status")
+  accessTokenEncrypted String?          @map("access_token_encrypted")
+  connectedAt          DateTime?        @map("connected_at")
+  disconnectedAt       DateTime?        @map("disconnected_at")
+  createdAt            DateTime         @default(now()) @map("created_at")
+  updatedAt            DateTime         @updatedAt @map("updated_at")
+  restaurant           Restaurant       @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@map("whatsapp_connections")
+}
+
+model Order {
+  id                   String                @id @default(uuid())
+  restaurantId         String                @map("restaurant_id")
+  displayToken         String                @map("display_token")
+  customerPhone        String?               @map("customer_phone")
+  consentGiven         Boolean               @map("consent_given")
+  consentCapturedAt    DateTime              @default(now()) @map("consent_captured_at")
+  consentMethod        ConsentMethod?        @map("consent_method")
+  status               OrderStatus           @default(PREPARING)
+  readyAt              DateTime?             @map("ready_at")
+  collectedAt          DateTime?             @map("collected_at")
+  cancelledAt          DateTime?             @map("cancelled_at")
+  terminalAt           DateTime?             @map("terminal_at")
+  phoneScrubbedAt      DateTime?             @map("phone_scrubbed_at")
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+  notificationAttempts NotificationAttempt[]
+  restaurant           Restaurant            @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, status])
+  @@index([restaurantId, displayToken])
+  @@index([restaurantId, customerPhone])
+  @@index([status, terminalAt])
+  @@map("orders")
+}
+
+model NotificationAttempt {
+  id                         String                @id @default(uuid())
+  orderId                    String                @map("order_id")
+  attemptNumber              Int                   @map("attempt_number")
+  channel                    NotificationChannel   @default(WHATSAPP)
+  jobStatus                  NotificationJobStatus @default(PENDING) @map("job_status")
+  retryCount                 Int                   @default(0) @map("retry_count")
+  claimedAt                  DateTime?             @map("claimed_at")
+  sentAt                     DateTime?             @map("sent_at")
+  deliveredAt                DateTime?             @map("delivered_at")
+  readAt                     DateTime?             @map("read_at")
+  failedAt                   DateTime?             @map("failed_at")
+  providerMessageId          String?               @unique @map("provider_message_id")
+  senderDisplayNameSnapshot  String?               @map("sender_display_name_snapshot")
+  templateIdentifierSnapshot String?               @map("template_identifier_snapshot")
+  renderedMessageSnapshot    String?               @map("rendered_message_snapshot")
+  errorCode                  String?               @map("error_code")
+  errorMessage               String?               @map("error_message")
+  createdAt                  DateTime              @default(now()) @map("created_at")
+  order                      Order                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, attemptNumber])
+  @@index([jobStatus])
+  @@index([orderId])
+  @@map("notification_attempts")
+}
+
+model NotificationOptOut {
+  id              String     @id @default(uuid())
+  restaurantId    String     @map("restaurant_id")
+  phoneNormalized String     @map("phone_normalized")
+  optedOutAt      DateTime   @default(now()) @map("opted_out_at")
+  restaurant      Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, phoneNormalized])
+  @@map("notification_opt_outs")
+}
+
+enum RestaurantStatus {
+  ACTIVE
+  DEACTIVATED
+}
+
+enum ConnectionStatus {
+  NOT_CONNECTED
+  PENDING
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+enum OrderStatus {
+  PREPARING
+  READY
+  COLLECTED
+  CANCELLED
+}
+
+enum ConsentMethod {
+  VERBAL_STAFF_CONFIRMED
+}
+
+enum NotificationChannel {
+  WHATSAPP
+}
+
+enum NotificationJobStatus {
+  PENDING
+  PROCESSING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
