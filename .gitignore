@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+
+# Local PostgreSQL data
+postgres-data/
+
+# Tooling and OS files
+.vite/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.idea/
+.vscode/
+!.vscode/extensions.json
