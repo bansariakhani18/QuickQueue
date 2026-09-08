@@ -64,8 +64,8 @@ npm run dev:frontend
 
 As of the latest state capture:
 - **Phase 0 (Foundation):** Complete — project structure, Docker, workspaces
+- **Phase 1 (Backend Skeleton):** Complete — Express + TypeScript + health check verified
 - **Phase 2 (Database Schema):** Complete — Prisma schema, migration applied, verified
-- **Phase 1 (Backend Skeleton):** Not yet started — health check exists but no API endpoints
 - **Phases 3–22:** Not started
 
 See `docs/PROGRESS.md` for detailed phase tracking.

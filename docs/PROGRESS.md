@@ -3,25 +3,15 @@
 ## Repository State
 
 - **Branch:** `main`
-- **HEAD:** `abee3a6 chore: establish QuickQueue project foundation`
+- **HEAD:** `fd16cb1 chore: establish database foundation and build workflow`
 - **Commits (in order):**
   1. `56aca30 docs: add frozen QuickQueue V1 SRS`
   2. `abee3a6 chore: establish QuickQueue project foundation`
+  3. `fd16cb1 chore: establish database foundation and build workflow`
 
-### Uncommitted / Untracked Work
+### Working Tree
 
-The following files are modified or untracked in the working tree and have **not** been committed or pushed:
-
-| Status | File | Description |
-|--------|------|-------------|
-| Modified | `.env.example` | Port changed from 5432 → 5433; DATABASE_URL updated |
-| Modified | `backend/package.json` | Added `@prisma/client`, `prisma`, and `prisma` script |
-| Modified | `docker-compose.yml` | Default port changed from 5432 → 5433 |
-| Modified | `package-lock.json` | Updated with Prisma dependencies |
-| Untracked | `QuickQueue_Build_Playbook.md` | Build playbook for the coding agent |
-| Untracked | `backend/prisma/` | Prisma schema, migrations, and lock file |
-
-These changes are intentionally uncommitted pending human review.
+Clean — no uncommitted changes.
 
 ---
 
@@ -52,25 +42,32 @@ All Phase 0 goals are met:
 - All 4 foreign keys use `ON DELETE CASCADE`
 - Partial unique index enforcement tested live: blocks duplicate PENDING/PROCESSING attempts, allows new attempts after SENT/DELIVERED/READ/FAILED
 
-### Backend Foundation
+### Phase 1 — Backend Skeleton: ✅ COMPLETE
 
-- `backend/src/server.ts`: Express server with `GET /health` returning `200 {"status":"ok"}`
-- TypeScript strict mode enabled
-- Typecheck passes (frontend + backend)
-- Build passes (backend)
-- No API endpoints beyond health check
-- No authentication, order lifecycle, notification logic, or WhatsApp integration
+Verified against `QuickQueue_Build_Playbook.md` Phase 1 requirements:
+- `backend/package.json`: TypeScript, Express 5.2.1, tsx (hot reload), @types packages ✅
+- `backend/tsconfig.json`: strict mode enabled, additional strict options ✅
+- `backend/src/server.ts`: Express server on `BACKEND_PORT` (default 3000), `GET /health` returns `200 {"status":"ok"}` ✅
+- npm scripts: `dev` (tsx watch), `build` (tsc), `typecheck` (tsc --noEmit) ✅
+- Typecheck passes ✅
+- Build passes ✅
+- Server starts, `/health` responds correctly ✅
 
-### Not Implemented
+**Deviation from Playbook:** Playbook specifies default port 4000; code uses 3000 to match the committed `.env.example` (`BACKEND_PORT=3000`). This is a deliberate local configuration choice, not an error.
+
+### Not Implemented (Phase 2+)
 
 The following are **not** implemented — do not assume they exist:
-- Phase 1 API implementation (authentication, CRUD endpoints)
-- Notification processor
-- WhatsApp integration / webhooks
-- Frontend product UI
+- Authentication (Phase 3)
+- Password reset (Phase 4)
+- CSRF / rate limiting (Phase 5)
+- Order CRUD / tenant isolation (Phase 6)
+- Order status transitions (Phase 7)
+- Notification logic (Phase 8+)
+- WhatsApp integration / webhooks (Phase 12+)
+- Frontend product UI (Phase 17+)
 - Tests
-- Rate limiting / CSRF protection
-- Phone number scrubbing / retention cleanup
+- Phone number scrubbing / retention cleanup (Phase 11)
 
 ---
 
@@ -97,9 +94,9 @@ The following are **not** implemented — do not assume they exist:
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Phase 0 — Foundation | ✅ Complete | Project structure, Docker, workspaces |
-| Phase 1 — Backend Skeleton | ⬜ Not started | Next phase to implement |
+| Phase 1 — Backend Skeleton | ✅ Complete | Express + TypeScript + health check verified |
 | Phase 2 — Database Schema | ✅ Complete | Schema, migration, verified against live DB |
-| Phase 3 — Authentication Core | ⬜ Not started | |
+| Phase 3 — Authentication Core | ⬜ Not started | Next phase to implement |
 | Phase 4 — Password Reset | ⬜ Not started | |
 | Phase 5 — CSRF, Rate Limiting, Health+DB | ⬜ Not started | |
 | Phase 6 — Order CRUD & Tenant Isolation | ⬜ Not started | |
@@ -124,6 +121,6 @@ The following are **not** implemented — do not assume they exist:
 
 ## Next Step
 
-**Phase 1 — Backend Skeleton** per `QuickQueue_Build_Playbook.md`.
+**Phase 3 — Authentication Core** per `QuickQueue_Build_Playbook.md`.
 
-Before starting: commit or discard the current uncommitted work, per human decision.
+(Phase 2 was completed alongside Phase 0 in the foundation commit.)
