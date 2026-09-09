@@ -155,6 +155,34 @@ export async function recoverStuckJobs(
   return result.count
 }
 
+const DEFAULT_RETENTION_HOURS = 72
+
+function getRetentionHours(): number {
+  const envHours = parseInt(process.env.RETENTION_HOURS ?? '', 10)
+  return Number.isFinite(envHours) ? envHours : DEFAULT_RETENTION_HOURS
+}
+
+export async function scrubExpiredPhones(
+  retentionHours?: number,
+): Promise<number> {
+  const hours = retentionHours ?? getRetentionHours()
+  const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000)
+
+  const result = await prisma.order.updateMany({
+    where: {
+      status: { in: ['COLLECTED', 'CANCELLED'] },
+      terminalAt: { not: null, lt: cutoff },
+      customerPhone: { not: null },
+    },
+    data: {
+      customerPhone: null,
+      phoneScrubbedAt: new Date(),
+    },
+  })
+
+  return result.count
+}
+
 export async function recallOrder(
   restaurantId: string,
   orderId: string,
@@ -220,6 +248,7 @@ export class RecallError extends Error {
 }
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null
+let scrubIntervalHandle: ReturnType<typeof setInterval> | null = null
 
 export function startProcessor(intervalMs?: number): void {
   if (intervalHandle) return
@@ -243,11 +272,32 @@ export function startProcessor(intervalMs?: number): void {
   if (intervalHandle.unref) {
     intervalHandle.unref()
   }
+
+  if (!scrubIntervalHandle) {
+    const scrubEnvMs = parseInt(process.env.SCRUB_INTERVAL_MS ?? '', 10)
+    const scrubMs = Number.isFinite(scrubEnvMs) ? scrubEnvMs : 60 * 60 * 1000
+
+    scrubIntervalHandle = setInterval(async () => {
+      try {
+        await scrubExpiredPhones()
+      } catch {
+        // scrub error — do not crash
+      }
+    }, scrubMs)
+
+    if (scrubIntervalHandle.unref) {
+      scrubIntervalHandle.unref()
+    }
+  }
 }
 
 export function stopProcessor(): void {
   if (intervalHandle) {
     clearInterval(intervalHandle)
     intervalHandle = null
+  }
+  if (scrubIntervalHandle) {
+    clearInterval(scrubIntervalHandle)
+    scrubIntervalHandle = null
   }
 }

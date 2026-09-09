@@ -16,7 +16,7 @@
 
 ### Working Tree
 
-Uncommitted changes: Phase 8 (notification attempt creation), Phase 9 (background processor, claiming, crash recovery), Phase 10 (retry classification & RECALL with backoff enforcement).
+Uncommitted changes: Phase 8 (notification attempt creation), Phase 9 (background processor, claiming, crash recovery), Phase 10 (retry classification & RECALL with backoff enforcement), Phase 11 (retention / phone scrubbing).
 
 ---
 
@@ -152,6 +152,19 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 - Build passes ✅
 - 85 tests total across all suites ✅
 
+### Phase 11 — Retention / Phone Scrubbing: ✅ COMPLETE (uncommitted)
+
+- `scrubExpiredPhones(retentionHours?)` in `processor.ts`: Finds orders where `terminalAt` is older than configurable retention window (default 72h, env `RETENTION_HOURS`) and `customerPhone` is not null; sets `customerPhone` to null and `phoneScrubbedAt` to current timestamp ✅
+- Uses `(status, terminalAt)` index via Prisma `updateMany` with `terminalAt: { not: null, lt: cutoff }` and `customerPhone: { not: null }` — no full table scan ✅
+- Idempotent: already-scrubbed rows (`customerPhone IS NULL`) excluded by filter, safe to run repeatedly ✅
+- `RETENTION_HOURS` env var parsed at call time (default 72), configurable per environment ✅
+- Wired into processor interval via separate hourly `scrubIntervalHandle`, controlled by `SCRUB_INTERVAL_MS` env var (default 3,600,000ms) ✅
+- `startProcessor` / `stopProcessor` manage both the notification processor and scrubber intervals ✅
+- 5 tests: past window scrubbed, within window untouched, null terminalAt untouched, idempotent, notificationAttempts preserved after scrub ✅
+- Typecheck passes ✅
+- Build passes ✅
+- 90 tests total across all suites ✅
+
 ---
 
 ## PostgreSQL Environment
@@ -187,7 +200,8 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 | Phase 8 — Notification Attempt Creation | ✅ Complete | Consent/opt-out gating, transactional guarantee, 5 tests |
 | Phase 9 — Background Processor | ✅ Complete | SKIP LOCKED claiming, stuck recovery, 9 tests |
 | Phase 10 — Retry Classification & RECALL | ✅ Complete | Transient retry with backoff, permanent fail, RECALL, 16 tests |
-| Phase 11 — Retention / Phone Scrubbing | ⬜ Not started | Next phase to implement |
+| Phase 11 — Retention / Phone Scrubbing | ✅ Complete | terminalAt-based cleanup, configurable retention, idempotent, 5 tests |
+| Phase 12 — Real WhatsApp Integration | ⬜ Not started | Next phase to implement |
 | Phase 11 — Retention / Phone Scrubbing | ⬜ Not started | |
 | Phase 12 — Real WhatsApp Integration | ⬜ Not started | |
 | Phase 13 — Webhook Receiver | ⬜ Not started | |
@@ -205,4 +219,4 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 
 ## Next Step
 
-**Phase 11 — Retention / Phone Scrubbing** per `QuickQueue_Build_Playbook.md`.
+**Phase 12 — Real WhatsApp Integration (Development/Test Environment Only)** per `QuickQueue_Build_Playbook.md`.

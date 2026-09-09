@@ -9,6 +9,7 @@ import {
   stopProcessor,
   recallOrder,
   RecallError,
+  scrubExpiredPhones,
   type FailureType,
 } from '../processor.js'
 
@@ -71,6 +72,7 @@ describe('Notification Processor (Phase 9)', () => {
 
   beforeEach(async () => {
     clearSendFailurePredicate()
+    await prisma.notificationAttempt.deleteMany({ where: { jobStatus: { in: ['PENDING', 'PROCESSING'] } } })
   })
 
   describe('Claiming', () => {
@@ -276,6 +278,7 @@ describe('Phase 10 — Retry Classification and RECALL', () => {
 
   beforeEach(async () => {
     clearSendFailurePredicate()
+    await prisma.notificationAttempt.deleteMany({ where: { jobStatus: { in: ['PENDING', 'PROCESSING'] } } })
   })
 
   describe('Transient failure retry (FR-033)', () => {
@@ -684,5 +687,186 @@ describe('Phase 10 — Retry Classification and RECALL', () => {
       await prisma.order.delete({ where: { id: order.id } })
       await prisma.restaurant.delete({ where: { id: restaurant.id } })
     })
+  })
+})
+
+describe('Phase 11 — Retention / Phone Scrubbing', () => {
+  beforeAll(async () => {
+    await prisma.$connect()
+  })
+
+  afterAll(async () => {
+    await prisma.$disconnect()
+  })
+
+  async function createRestaurant(email: string) {
+    return prisma.restaurant.create({
+      data: {
+        name: `Scrub Test ${email}`,
+        email,
+        passwordHash: 'hash',
+        status: 'ACTIVE',
+      },
+    })
+  }
+
+  async function createOrder(restaurantId: string, phone: string) {
+    return prisma.order.create({
+      data: {
+        restaurantId,
+        displayToken: `scrub-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        customerPhone: phone,
+        consentGiven: true,
+        consentMethod: 'VERBAL_STAFF_CONFIRMED',
+        status: 'READY',
+      },
+    })
+  }
+
+  it('should scrub phone for order past retention window', async () => {
+    const restaurant = await createRestaurant(`scrub-past-${Date.now()}@ex.com`)
+    const order = await createOrder(restaurant.id, '+14155559001')
+
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: 'COLLECTED',
+        terminalAt: new Date(Date.now() - 80 * 60 * 60 * 1000),
+      },
+    })
+
+    const scrubbed = await scrubExpiredPhones(72)
+    expect(scrubbed).toBe(1)
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } })
+    expect(updated!.customerPhone).toBeNull()
+    expect(updated!.phoneScrubbedAt).not.toBeNull()
+
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
+  })
+
+  it('should not scrub phone for order within retention window', async () => {
+    const restaurant = await createRestaurant(`scrub-within-${Date.now()}@ex.com`)
+    const order = await createOrder(restaurant.id, '+14155559002')
+
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: 'COLLECTED',
+        terminalAt: new Date(Date.now() - 10 * 60 * 60 * 1000),
+      },
+    })
+
+    const scrubbed = await scrubExpiredPhones(72)
+    expect(scrubbed).toBe(0)
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } })
+    expect(updated!.customerPhone).toBe('+14155559002')
+    expect(updated!.phoneScrubbedAt).toBeNull()
+
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
+  })
+
+  it('should not scrub order with null terminalAt regardless of age', async () => {
+    const restaurant = await createRestaurant(`scrub-null-${Date.now()}@ex.com`)
+    const order = await prisma.order.create({
+      data: {
+        restaurantId: restaurant.id,
+        displayToken: `scrub-null-${Date.now()}`,
+        customerPhone: '+14155559003',
+        consentGiven: true,
+        consentMethod: 'VERBAL_STAFF_CONFIRMED',
+        status: 'PREPARING',
+      },
+    })
+
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { createdAt: new Date(Date.now() - 200 * 60 * 60 * 1000) },
+    })
+
+    const scrubbed = await scrubExpiredPhones(72)
+    expect(scrubbed).toBe(0)
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } })
+    expect(updated!.customerPhone).toBe('+14155559003')
+    expect(updated!.phoneScrubbedAt).toBeNull()
+
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
+  })
+
+  it('should be idempotent: running twice does not error or double-process', async () => {
+    const restaurant = await createRestaurant(`scrub-idem-${Date.now()}@ex.com`)
+    const order = await createOrder(restaurant.id, '+14155559004')
+
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: 'CANCELLED',
+        terminalAt: new Date(Date.now() - 80 * 60 * 60 * 1000),
+      },
+    })
+
+    const first = await scrubExpiredPhones(72)
+    expect(first).toBe(1)
+
+    const second = await scrubExpiredPhones(72)
+    expect(second).toBe(0)
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } })
+    expect(updated!.customerPhone).toBeNull()
+    expect(updated!.phoneScrubbedAt).not.toBeNull()
+
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
+  })
+
+  it('should preserve notificationAttempts and snapshot fields after scrubbing', async () => {
+    const restaurant = await createRestaurant(`scrub-preserve-${Date.now()}@ex.com`)
+    const order = await createOrder(restaurant.id, '+14155559005')
+
+    const attempt = await prisma.notificationAttempt.create({
+      data: {
+        orderId: order.id,
+        attemptNumber: 1,
+        channel: 'WHATSAPP',
+        jobStatus: 'SENT',
+        sentAt: new Date(),
+        senderDisplayNameSnapshot: 'Pizza Palace',
+        templateIdentifierSnapshot: 'order_ready_v1',
+        renderedMessageSnapshot: 'Your order #47 is ready!',
+      },
+    })
+
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: 'COLLECTED',
+        terminalAt: new Date(Date.now() - 80 * 60 * 60 * 1000),
+      },
+    })
+
+    await scrubExpiredPhones(72)
+
+    const updatedOrder = await prisma.order.findUnique({ where: { id: order.id } })
+    expect(updatedOrder!.customerPhone).toBeNull()
+    expect(updatedOrder!.phoneScrubbedAt).not.toBeNull()
+    expect(updatedOrder!.displayToken).toBe(order.displayToken)
+    expect(updatedOrder!.status).toBe('COLLECTED')
+
+    const updatedAttempt = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+    expect(updatedAttempt).not.toBeNull()
+    expect(updatedAttempt!.jobStatus).toBe('SENT')
+    expect(updatedAttempt!.senderDisplayNameSnapshot).toBe('Pizza Palace')
+    expect(updatedAttempt!.templateIdentifierSnapshot).toBe('order_ready_v1')
+    expect(updatedAttempt!.renderedMessageSnapshot).toBe('Your order #47 is ready!')
+    expect(updatedAttempt!.sentAt).not.toBeNull()
+
+    await prisma.notificationAttempt.delete({ where: { id: attempt.id } })
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
   })
 })
