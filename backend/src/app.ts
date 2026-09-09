@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client'
 import { sessionMiddleware, authRouter } from './auth.js'
 import { originValidation } from './origin.js'
 import { createRateLimiter } from './rateLimit.js'
+import { ordersRouter } from './ordersRouter.js'
 
 const app = express()
 const prisma = new PrismaClient()
@@ -35,5 +36,6 @@ app.get('/health', async (_request, response) => {
 app.post('/auth/login', loginRateLimiter)
 app.post('/auth/password-reset/request', resetRequestRateLimiter)
 app.use('/auth', authRouter)
+app.use('/orders', ordersRouter)
 
 export { app }

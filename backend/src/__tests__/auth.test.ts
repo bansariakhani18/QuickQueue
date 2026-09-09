@@ -41,7 +41,6 @@ describe('Auth', () => {
 
   afterAll(async () => {
     await prisma.restaurant.deleteMany({ where: { email: testEmail } })
-    await prisma.$disconnect()
   })
 
   describe('POST /auth/signup', () => {
