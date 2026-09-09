@@ -119,6 +119,21 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 - Build passes ✅
 - 60 tests total across all suites ✅
 
+### Phase 9 — Background Processor, Claiming, and Crash Recovery: ✅ COMPLETE (uncommitted)
+
+- `backend/src/processor.ts`: In-process background processor with configurable interval ✅
+- `claimAndProcessOne()`: Claims one PENDING attempt using `SELECT ... FOR UPDATE SKIP LOCKED` (FR-029) ✅
+- Deactivated-restaurant exclusion: claim query joins restaurants table, excludes `status = DEACTIVATED` (FR-029) ✅
+- PROCESSING committed before external call, no transaction across send (FR-030) ✅
+- Mock send → SENT on success, FAILED on sender throw ✅
+- `recoverStuckJobs(thresholdMs)`: Returns PROCESSING jobs stuck beyond threshold to PENDING (FR-034) ✅
+- `startProcessor(intervalMs)` / `stopProcessor()`: Configurable via `PROCESSOR_INTERVAL_MS` env var ✅
+- `setSendFailurePredicate()` / `clearSendFailurePredicate()`: Test-only mock failure injection ✅
+- 9 tests: claiming (4), sender failure (1), stuck recovery (2), deactivated exclusion (2) ✅
+- Typecheck passes ✅
+- Build passes ✅
+- 69 tests total across all suites ✅
+
 ---
 
 ## PostgreSQL Environment
@@ -152,7 +167,8 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 | Phase 6 — Order CRUD & Tenant Isolation | ✅ Complete | Repository layer, 14 tests, cross-tenant IDOR |
 | Phase 7 — Order Status Transitions | ✅ Complete | Row locking, 15 tests, concurrency |
 | Phase 8 — Notification Attempt Creation | ✅ Complete | Consent/opt-out gating, transactional guarantee, 5 tests |
-| Phase 9 — Background Processor | ⬜ Not started | Next phase to implement |
+| Phase 9 — Background Processor | ✅ Complete | SKIP LOCKED claiming, stuck recovery, 9 tests |
+| Phase 10 — Retry Classification & RECALL | ⬜ Not started | Next phase to implement |
 | Phase 10 — Retry Classification & RECALL | ⬜ Not started | |
 | Phase 11 — Retention / Phone Scrubbing | ⬜ Not started | |
 | Phase 12 — Real WhatsApp Integration | ⬜ Not started | |
@@ -171,4 +187,4 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 
 ## Next Step
 
-**Phase 9 — Background Processor, Claiming, and Crash Recovery** per `QuickQueue_Build_Playbook.md`.
+**Phase 10 — Automatic Retry Classification and RECALL** per `QuickQueue_Build_Playbook.md`.

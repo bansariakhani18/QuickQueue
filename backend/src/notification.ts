@@ -6,6 +6,8 @@ export interface NotificationPayload {
 
 export interface NotificationSender {
   send(payload: NotificationPayload): Promise<void>
+  setFailPredicate?(fn: (payload: NotificationPayload) => boolean): void
+  clearFailPredicate?(): void
 }
 
 class MockNotificationSender implements NotificationSender {
