@@ -120,6 +120,7 @@ export async function transitionOrderStatus(
   restaurantId: string,
   orderId: string,
   targetStatus: TransitionStatus,
+  options?: { onBeforeAttemptInsert?: () => void | never },
 ): Promise<OrderRecord> {
   return prisma.$transaction(async (tx) => {
     const rows = await tx.$queryRaw<
@@ -162,6 +163,36 @@ export async function transitionOrderStatus(
       where: { id: orderId },
       data: updateData,
     })
+
+    if (targetStatus === 'READY') {
+      if (!order.consentGiven) {
+        return order
+      }
+
+      const optOut = await tx.notificationOptOut.findUnique({
+        where: {
+          restaurantId_phoneNormalized: {
+            restaurantId,
+            phoneNormalized: order.customerPhone ?? '',
+          },
+        },
+      })
+
+      if (optOut) {
+        return order
+      }
+
+      options?.onBeforeAttemptInsert?.()
+
+      await tx.notificationAttempt.create({
+        data: {
+          orderId: order.id,
+          attemptNumber: 1,
+          channel: 'WHATSAPP',
+          jobStatus: 'PENDING',
+        },
+      })
+    }
 
     return order
   })

@@ -3,16 +3,20 @@
 ## Repository State
 
 - **Branch:** `main`
-- **HEAD:** `62dacb6 feat: implement authentication core (Phase 3)`
+- **HEAD:** `b8e4ea5 feat: implement order status transitions (Phase 7)`
 - **Commits (in order):**
   1. `56aca30 docs: add frozen QuickQueue V1 SRS`
   2. `abee3a6 chore: establish QuickQueue project foundation`
   3. `fd16cb1 chore: establish database foundation and build workflow`
   4. `62dacb6 feat: implement authentication core (Phase 3)`
+  5. `0801b26 feat: implement password reset flow (Phase 4)`
+  6. `092aa64 feat: implement password reset and security protections (Phase 4-5)`
+  7. `2f48616 feat: implement order creation and active order listing (Phase 6)`
+  8. `b8e4ea5 feat: implement order status transitions (Phase 7)`
 
 ### Working Tree
 
-Clean — no uncommitted changes.
+Uncommitted changes: Phase 8 implementation (notification attempt creation, mock sender, opt-out/consent gating, transactional rollback test).
 
 ---
 
@@ -29,7 +33,7 @@ All Phase 0 goals are met:
 - Backend skeleton: Express + TypeScript + minimal health check
 - Frontend skeleton: React + TypeScript + Vite
 
-### Phase 2 — Database Schema and First Migration: ✅ COMPLETE (locally)
+### Phase 2 — Database Schema and First Migration: ✅ COMPLETE
 
 - Prisma 6.19.3 installed and configured
 - `backend/prisma/schema.prisma` matches frozen SRS §14.2 exactly (all 5 models, 6 enums, all indexes)
@@ -68,16 +72,52 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 - Typecheck passes ✅
 - Build passes ✅
 
-### Not Implemented (Phase 4+)
+### Phase 4 — Password Reset: ✅ COMPLETE
 
-The following are **not** implemented — do not assume they exist:
-- CSRF / rate limiting (Phase 5)
-- Order CRUD / tenant isolation (Phase 6)
-- Order status transitions (Phase 7)
-- Notification logic (Phase 8+)
-- WhatsApp integration / webhooks (Phase 12+)
-- Frontend product UI (Phase 17+)
-- Phone number scrubbing / retention cleanup (Phase 11)
+- `backend/src/email.ts`: EmailSender interface + ConsoleEmailSender ✅
+- POST /auth/password-reset/request: token generation, SHA-256 hash, 1hr expiry ✅
+- POST /auth/password-reset/confirm: `prisma.$transaction` with `SELECT ... FOR UPDATE`, bcrypt hash before lock ✅
+- 8 tests: non-existent email, token stored, valid reset, expired token, reused token, second reset invalidates first, session invalidation, concurrent duplicate ✅
+
+### Phase 5 — CSRF, Rate Limiting, Health Check with DB: ✅ COMPLETE
+
+- `backend/src/origin.ts`: Origin validation middleware (POST/PUT/PATCH/DELETE only) ✅
+- `backend/src/rateLimit.ts`: In-memory rate limiter (login: 5/15min, reset-request: 5/15min) ✅
+- `GET /health`: Async DB connectivity check via `SELECT 1`, returns 503 on failure ✅
+- Test isolation: `clearRateLimitStore()` in `beforeEach` ✅
+- 6 tests: origin rejection (403), origin allow (200), GET without origin, login rate limit (429), reset-request rate limit (429), health DB check (200) ✅
+
+### Phase 6 — Order CRUD & Tenant Isolation: ✅ COMPLETE
+
+- `backend/src/orders.ts`: Repository layer — `createOrder`, `listActiveOrders` with `restaurantId`-first pattern ✅
+- `backend/src/ordersRouter.ts`: `POST /orders`, `GET /orders` behind `requireAuth` ✅
+- Phone normalization via `libphonenumber-js` (E.164, US default) ✅
+- Consent: explicit boolean, no default, `consentMethod` per FR-016 ✅
+- Active orders: PREPARING + READY only, READY before PREPARING, oldest-first ✅
+- Search: exact match on `displayToken` or `customerPhone` (FR-025) ✅
+- Cross-tenant isolation: automated IDOR-style tests ✅
+- 14 tests: creation (9), listing (2), cross-tenant (3) ✅
+
+### Phase 7 — Order Status Transitions with Row Locking: ✅ COMPLETE
+
+- `transitionOrderStatus(restaurantId, orderId, targetStatus)` in `orders.ts` ✅
+- `SELECT ... FOR UPDATE` via `prisma.$transaction` (FR-022) ✅
+- Allowed transitions enforced per FR-021 ✅
+- Idempotent READY: returns current state, no error, no duplicate (FR-023) ✅
+- `terminalAt` set on COLLECTED/CANCELLED transitions (FR-021a) ✅
+- Routes: `POST /orders/:id/ready`, `/:id/collected`, `/:id/cancel` ✅
+- 15 tests: valid transitions (4), invalid transitions (5), idempotent READY (2), terminalAt (3), cross-tenant (1), concurrency (1) ✅
+
+### Phase 8 — Notification Attempt Creation: ✅ COMPLETE (uncommitted)
+
+- `backend/src/notification.ts`: Mock notification sender with `NotificationSender` interface ✅
+- READY transition gated on `consentGiven` + `NotificationOptOut` check (FR-019, FR-028) ✅
+- `NotificationAttempt` created in same transaction as READY status change (FR-027) ✅
+- `onBeforeAttemptInsert` hook for rollback testing ✅
+- 5 tests: consent+no optout, consent=false, optout exists, transactional rollback, idempotent READY no duplicate ✅
+- Typecheck passes ✅
+- Build passes ✅
+- 60 tests total across all suites ✅
 
 ---
 
@@ -107,12 +147,12 @@ The following are **not** implemented — do not assume they exist:
 | Phase 1 — Backend Skeleton | ✅ Complete | Express + TypeScript + health check verified |
 | Phase 2 — Database Schema | ✅ Complete | Schema, migration, verified against live DB |
 | Phase 3 — Authentication Core | ✅ Complete | Auth routes + middleware + 11 tests |
-| Phase 4 — Password Reset | ⬜ Not started | Next phase to implement |
-| Phase 5 — CSRF, Rate Limiting, Health+DB | ⬜ Not started | |
-| Phase 6 — Order CRUD & Tenant Isolation | ⬜ Not started | |
-| Phase 7 — Order Status Transitions | ⬜ Not started | |
-| Phase 8 — Notification Attempt Creation | ⬜ Not started | |
-| Phase 9 — Background Processor | ⬜ Not started | |
+| Phase 4 — Password Reset | ✅ Complete | Token flow + 8 tests |
+| Phase 5 — CSRF, Rate Limiting, Health+DB | ✅ Complete | Origin validation, rate limiters, DB health check |
+| Phase 6 — Order CRUD & Tenant Isolation | ✅ Complete | Repository layer, 14 tests, cross-tenant IDOR |
+| Phase 7 — Order Status Transitions | ✅ Complete | Row locking, 15 tests, concurrency |
+| Phase 8 — Notification Attempt Creation | ✅ Complete | Consent/opt-out gating, transactional guarantee, 5 tests |
+| Phase 9 — Background Processor | ⬜ Not started | Next phase to implement |
 | Phase 10 — Retry Classification & RECALL | ⬜ Not started | |
 | Phase 11 — Retention / Phone Scrubbing | ⬜ Not started | |
 | Phase 12 — Real WhatsApp Integration | ⬜ Not started | |
@@ -131,4 +171,4 @@ The following are **not** implemented — do not assume they exist:
 
 ## Next Step
 
-**Phase 4 — Password Reset** per `QuickQueue_Build_Playbook.md`.
+**Phase 9 — Background Processor, Claiming, and Crash Recovery** per `QuickQueue_Build_Playbook.md`.

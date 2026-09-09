@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import request from 'supertest'
 import { app } from '../app.js'
 import { clearRateLimitStore } from '../rateLimit.js'
+import { transitionOrderStatus } from '../orders.js'
 import { PrismaClient } from '@prisma/client'
 import type { Response } from 'supertest'
 
@@ -614,6 +615,141 @@ describe('Orders', () => {
         expect(['READY', 'CANCELLED']).toContain(finalOrder!.status)
         expect(finalOrder!.terminalAt).toBeDefined()
       })
+    })
+  })
+
+  describe('Notification attempt creation (Phase 8)', () => {
+    async function createOrderAs(
+      cookie: string,
+      token: string,
+      phone: string,
+      consentGiven: boolean = true,
+    ) {
+      const res = await request(app)
+        .post('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookie)
+        .send({
+          displayToken: token,
+          customerPhone: phone,
+          consentGiven,
+        })
+      expect(res.status).toBe(201)
+      return res.body
+    }
+
+    it('consent true + no opt-out → exactly one PENDING attempt created', async () => {
+      const order = await createOrderAs(cookieA, 'nfy-1', '+14155557060')
+
+      const res = await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('READY')
+
+      const attempts = await prisma.notificationAttempt.findMany({
+        where: { orderId: order.id },
+      })
+      expect(attempts).toHaveLength(1)
+      expect(attempts[0]).toMatchObject({
+        attemptNumber: 1,
+        channel: 'WHATSAPP',
+        jobStatus: 'PENDING',
+      })
+    })
+
+    it('consent false → no attempt created', async () => {
+      const order = await createOrderAs(cookieA, 'nfy-2', '+14155557061', false)
+
+      const res = await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('READY')
+
+      const attempts = await prisma.notificationAttempt.findMany({
+        where: { orderId: order.id },
+      })
+      expect(attempts).toHaveLength(0)
+    })
+
+    it('opt-out exists → no attempt created even when consent is true', async () => {
+      const phone = '+14155557062'
+      const restaurantId = restaurantAId
+
+      await prisma.notificationOptOut.create({
+        data: {
+          restaurantId,
+          phoneNormalized: phone,
+        },
+      })
+
+      const order = await createOrderAs(cookieA, 'nfy-3', phone)
+
+      const res = await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('READY')
+
+      const attempts = await prisma.notificationAttempt.findMany({
+        where: { orderId: order.id },
+      })
+      expect(attempts).toHaveLength(0)
+
+      await prisma.notificationOptOut.deleteMany({
+        where: { restaurantId, phoneNormalized: phone },
+      })
+    })
+
+    it('transactional rollback: failure between order update and attempt insert rolls back entirely', async () => {
+      const order = await createOrderAs(cookieA, 'nfy-4', '+14155557063')
+
+      try {
+        await transitionOrderStatus(restaurantAId, order.id, 'READY', {
+          onBeforeAttemptInsert: () => {
+            throw new Error('Simulated insert failure')
+          },
+        })
+        expect.fail('Should have thrown')
+      } catch {
+        // expected
+      }
+
+      const finalOrder = await prisma.order.findUnique({ where: { id: order.id } })
+      expect(finalOrder).not.toBeNull()
+      expect(finalOrder!.status).toBe('PREPARING')
+      expect(finalOrder!.readyAt).toBeNull()
+
+      const attempts = await prisma.notificationAttempt.findMany({
+        where: { orderId: order.id },
+      })
+      expect(attempts).toHaveLength(0)
+    })
+
+    it('idempotent READY does not create a duplicate attempt', async () => {
+      const order = await createOrderAs(cookieA, 'nfy-5', '+14155557064')
+
+      await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      const attempts = await prisma.notificationAttempt.findMany({
+        where: { orderId: order.id },
+      })
+      expect(attempts).toHaveLength(1)
     })
   })
 })
