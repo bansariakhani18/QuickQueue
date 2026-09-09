@@ -76,6 +76,7 @@ model NotificationAttempt {
   channel                    NotificationChannel   @default(WHATSAPP)
   jobStatus                  NotificationJobStatus @default(PENDING) @map("job_status")
   retryCount                 Int                   @default(0) @map("retry_count")
+  nextRetryAt                DateTime?             @map("next_retry_at")
   claimedAt                  DateTime?             @map("claimed_at")
   sentAt                     DateTime?             @map("sent_at")
   deliveredAt                DateTime?             @map("delivered_at")

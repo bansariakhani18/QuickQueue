@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { requireAuth, type SessionData } from './auth.js'
 import { createOrder, listActiveOrders, transitionOrderStatus, PhoneNormalizationError, ValidationError, OrderNotFoundError, TransitionError } from './orders.js'
 import type { TransitionStatus } from './orders.js'
+import { recallOrder, RecallError } from './processor.js'
 import type { Request, Response } from 'express'
 
 export const ordersRouter = Router()
@@ -132,4 +133,26 @@ ordersRouter.post('/:id/collected', (req: Request, res: Response) => {
 
 ordersRouter.post('/:id/cancel', (req: Request, res: Response) => {
   handleTransition(req, res, 'CANCELLED')
+})
+
+ordersRouter.post('/:id/recall', (req: Request, res: Response) => {
+  const session = req.session as SessionData
+  const restaurantId = session.restaurantId
+  const orderId = req.params.id as string
+
+  recallOrder(restaurantId, orderId)
+    .then((result) => {
+      res.status(200).json({
+        message: 'Recall initiated',
+        attemptNumber: result.attemptNumber,
+      })
+    })
+    .catch((err) => {
+      if (err instanceof RecallError) {
+        res.status(409).json({ error: err.message })
+        return
+      }
+      console.error('Recall error:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    })
 })

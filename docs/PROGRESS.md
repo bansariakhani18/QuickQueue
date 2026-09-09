@@ -16,7 +16,7 @@
 
 ### Working Tree
 
-Uncommitted changes: Phase 8 implementation (notification attempt creation, mock sender, opt-out/consent gating, transactional rollback test).
+Uncommitted changes: Phase 8 (notification attempt creation), Phase 9 (background processor, claiming, crash recovery), Phase 10 (retry classification & RECALL with backoff enforcement).
 
 ---
 
@@ -129,10 +129,28 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 - `recoverStuckJobs(thresholdMs)`: Returns PROCESSING jobs stuck beyond threshold to PENDING (FR-034) ✅
 - `startProcessor(intervalMs)` / `stopProcessor()`: Configurable via `PROCESSOR_INTERVAL_MS` env var ✅
 - `setSendFailurePredicate()` / `clearSendFailurePredicate()`: Test-only mock failure injection ✅
-- 9 tests: claiming (4), sender failure (1), stuck recovery (2), deactivated exclusion (2) ✅
+- Processor loop calls both `claimAndProcessOne()` and `recoverStuckJobs()` each tick ✅
+- 9 tests: claiming (4), sender failure (1), stuck recovery (2), deactivated exclusion (2), processor loop (1) ✅
 - Typecheck passes ✅
 - Build passes ✅
 - 69 tests total across all suites ✅
+
+### Phase 10 — Retry Classification & RECALL: ✅ COMPLETE (uncommitted)
+
+- `FailureType` (`'transient' | 'permanent'`) exported from `processor.ts` ✅
+- `setSendFailurePredicate` signature updated: returns `FailureType | null` instead of `boolean` ✅
+- Transient failure: same row increments `retryCount`, `jobStatus` reset to `PENDING`, up to 3 retries (FR-033) ✅
+- **Backoff enforcement**: `nextRetryAt` field on `NotificationAttempt`, set to `now + RETRY_BACKOFF_MS` (default 30s, env-configurable) on transient retry; `claimOne` query excludes attempts where `next_retry_at > NOW()` (FR-033) ✅
+- Permanent failure: immediate `FAILED`, no retry (FR-033) ✅
+- `recallOrder(restaurantId, orderId)`: `SELECT ... FOR UPDATE` on parent order, creates new `NotificationAttempt` with incremented `attemptNumber` (FR-035, FR-037) ✅
+- Eligibility checks: status=READY, no active PENDING/PROCESSING attempt, max 3 recalls per order (FR-035, FR-036) ✅
+- `RecallError` class for server-side rejection with clear messages ✅
+- `POST /orders/:id/recall` route in `ordersRouter.ts` ✅
+- Schema migration `20260909134413_add_next_retry_at` applied ✅
+- 16 tests: transient retry (4), permanent failure (2), recall-eligible (3), recall-ineligible (5), concurrent recall (1), retry vs recall distinction (1) ✅
+- Typecheck passes ✅
+- Build passes ✅
+- 85 tests total across all suites ✅
 
 ---
 
@@ -168,8 +186,8 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 | Phase 7 — Order Status Transitions | ✅ Complete | Row locking, 15 tests, concurrency |
 | Phase 8 — Notification Attempt Creation | ✅ Complete | Consent/opt-out gating, transactional guarantee, 5 tests |
 | Phase 9 — Background Processor | ✅ Complete | SKIP LOCKED claiming, stuck recovery, 9 tests |
-| Phase 10 — Retry Classification & RECALL | ⬜ Not started | Next phase to implement |
-| Phase 10 — Retry Classification & RECALL | ⬜ Not started | |
+| Phase 10 — Retry Classification & RECALL | ✅ Complete | Transient retry with backoff, permanent fail, RECALL, 16 tests |
+| Phase 11 — Retention / Phone Scrubbing | ⬜ Not started | Next phase to implement |
 | Phase 11 — Retention / Phone Scrubbing | ⬜ Not started | |
 | Phase 12 — Real WhatsApp Integration | ⬜ Not started | |
 | Phase 13 — Webhook Receiver | ⬜ Not started | |
@@ -187,4 +205,4 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 
 ## Next Step
 
-**Phase 10 — Automatic Retry Classification and RECALL** per `QuickQueue_Build_Playbook.md`.
+**Phase 11 — Retention / Phone Scrubbing** per `QuickQueue_Build_Playbook.md`.
