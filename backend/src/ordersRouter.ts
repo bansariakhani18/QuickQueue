@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { requireAuth, type SessionData } from './auth.js'
-import { createOrder, listActiveOrders, PhoneNormalizationError, ValidationError } from './orders.js'
+import { createOrder, listActiveOrders, transitionOrderStatus, PhoneNormalizationError, ValidationError, OrderNotFoundError, TransitionError } from './orders.js'
+import type { TransitionStatus } from './orders.js'
 import type { Request, Response } from 'express'
 
 export const ordersRouter = Router()
@@ -84,4 +85,51 @@ ordersRouter.get('/', (req: Request, res: Response) => {
       console.error('List orders error:', err)
       res.status(500).json({ error: 'Internal server error' })
     })
+})
+
+function handleTransition(
+  req: Request,
+  res: Response,
+  targetStatus: TransitionStatus,
+) {
+  const session = req.session as SessionData
+  const restaurantId = session.restaurantId
+  const orderId = req.params.id as string
+
+  transitionOrderStatus(restaurantId, orderId, targetStatus)
+    .then((order) => {
+      res.status(200).json({
+        id: order.id,
+        displayToken: order.displayToken,
+        status: order.status,
+        readyAt: order.readyAt,
+        collectedAt: order.collectedAt,
+        cancelledAt: order.cancelledAt,
+        terminalAt: order.terminalAt,
+      })
+    })
+    .catch((err) => {
+      if (err instanceof OrderNotFoundError) {
+        res.status(404).json({ error: err.message })
+        return
+      }
+      if (err instanceof TransitionError) {
+        res.status(409).json({ error: err.message })
+        return
+      }
+      console.error('Transition error:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    })
+}
+
+ordersRouter.post('/:id/ready', (req: Request, res: Response) => {
+  handleTransition(req, res, 'READY')
+})
+
+ordersRouter.post('/:id/collected', (req: Request, res: Response) => {
+  handleTransition(req, res, 'COLLECTED')
+})
+
+ordersRouter.post('/:id/cancel', (req: Request, res: Response) => {
+  handleTransition(req, res, 'CANCELLED')
 })

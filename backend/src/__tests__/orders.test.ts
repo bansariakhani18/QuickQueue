@@ -332,4 +332,288 @@ describe('Orders', () => {
       expect(aSearchRes.body.orders).toHaveLength(0)
     })
   })
+
+  describe('Order status transitions (Phase 7)', () => {
+    async function createOrderAs(
+      cookie: string,
+      token: string,
+      phone: string,
+    ) {
+      const res = await request(app)
+        .post('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookie)
+        .send({
+          displayToken: token,
+          customerPhone: phone,
+          consentGiven: true,
+        })
+      expect(res.status).toBe(201)
+      return res.body
+    }
+
+    describe('Valid transitions', () => {
+      it('PREPARING → READY', async () => {
+        const order = await createOrderAs(cookieA, 'tr-1', '+14155557001')
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(200)
+        expect(res.body.status).toBe('READY')
+        expect(res.body.readyAt).toBeDefined()
+        expect(res.body.terminalAt).toBeNull()
+      })
+
+      it('PREPARING → CANCELLED', async () => {
+        const order = await createOrderAs(cookieA, 'tc-1', '+14155557002')
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(200)
+        expect(res.body.status).toBe('CANCELLED')
+        expect(res.body.cancelledAt).toBeDefined()
+        expect(res.body.terminalAt).toBeDefined()
+      })
+
+      it('READY → COLLECTED', async () => {
+        const order = await createOrderAs(cookieA, 'rc-1', '+14155557003')
+        await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(200)
+        expect(res.body.status).toBe('COLLECTED')
+        expect(res.body.collectedAt).toBeDefined()
+        expect(res.body.terminalAt).toBeDefined()
+      })
+
+      it('READY → CANCELLED', async () => {
+        const order = await createOrderAs(cookieA, 'rc-2', '+14155557004')
+        await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(200)
+        expect(res.body.status).toBe('CANCELLED')
+        expect(res.body.cancelledAt).toBeDefined()
+        expect(res.body.terminalAt).toBeDefined()
+      })
+    })
+
+    describe('Invalid transitions', () => {
+      it('COLLECTED → READY rejected', async () => {
+        const order = await createOrderAs(cookieA, 'inv-1', '+14155557010')
+        await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        await request(app)
+          .post(`/orders/${order.id}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('Cannot transition')
+      })
+
+      it('CANCELLED → READY rejected', async () => {
+        const order = await createOrderAs(cookieA, 'inv-2', '+14155557011')
+        await request(app)
+          .post(`/orders/${order.id}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('Cannot transition')
+      })
+
+      it('CANCELLED → COLLECTED rejected', async () => {
+        const order = await createOrderAs(cookieA, 'inv-3', '+14155557012')
+        await request(app)
+          .post(`/orders/${order.id}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('Cannot transition')
+      })
+
+      it('COLLECTED → CANCELLED rejected', async () => {
+        const order = await createOrderAs(cookieA, 'inv-4', '+14155557013')
+        await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        await request(app)
+          .post(`/orders/${order.id}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('Cannot transition')
+      })
+
+      it('PREPARING → COLLECTED rejected', async () => {
+        const order = await createOrderAs(cookieA, 'inv-5', '+14155557014')
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('Cannot transition')
+      })
+    })
+
+    describe('Idempotent READY (FR-023)', () => {
+      it('should return 200 with current state when order is already READY', async () => {
+        const order = await createOrderAs(cookieA, 'idem-1', '+14155557020')
+        await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        const res = await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(200)
+        expect(res.body.status).toBe('READY')
+      })
+
+      it('should not overwrite readyAt on repeated READY', async () => {
+        const order = await createOrderAs(cookieA, 'idem-2', '+14155557021')
+        const firstRes = await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        const originalReadyAt = firstRes.body.readyAt
+
+        const secondRes = await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(secondRes.status).toBe(200)
+        expect(secondRes.body.readyAt).toBe(originalReadyAt)
+      })
+    })
+
+    describe('terminalAt behavior (FR-021a)', () => {
+      it('terminalAt is NULL after PREPARING → READY', async () => {
+        const order = await createOrderAs(cookieA, 'term-1', '+14155557030')
+        const res = await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.body.terminalAt).toBeNull()
+        expect(res.body.readyAt).toBeDefined()
+      })
+
+      it('terminalAt is set after READY → COLLECTED', async () => {
+        const order = await createOrderAs(cookieA, 'term-2', '+14155557031')
+        await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        const res = await request(app)
+          .post(`/orders/${order.id}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.body.terminalAt).toBeDefined()
+        expect(res.body.collectedAt).toBeDefined()
+      })
+
+      it('terminalAt is set after PREPARING → CANCELLED', async () => {
+        const order = await createOrderAs(cookieA, 'term-3', '+14155557032')
+        const res = await request(app)
+          .post(`/orders/${order.id}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.body.terminalAt).toBeDefined()
+        expect(res.body.cancelledAt).toBeDefined()
+      })
+    })
+
+    describe('Cross-tenant transition isolation', () => {
+      it('restaurant A cannot transition restaurant B order', async () => {
+        const bOrder = await createOrderAs(cookieB, 'cross-1', '+14155557040')
+
+        const res = await request(app)
+          .post(`/orders/${bOrder.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(404)
+      })
+    })
+
+    describe('Concurrency test (FR-022)', () => {
+      it('two conflicting transitions on same order resolve deterministically', async () => {
+        const order = await createOrderAs(cookieA, 'conc-1', '+14155557050')
+
+        const [resA, resB] = await Promise.all([
+          request(app)
+            .post(`/orders/${order.id}/ready`)
+            .set('Origin', ORIGIN)
+            .set('Cookie', cookieA),
+          request(app)
+            .post(`/orders/${order.id}/cancel`)
+            .set('Origin', ORIGIN)
+            .set('Cookie', cookieA),
+        ])
+
+        const statuses = [resA.status, resB.status].sort()
+        expect(statuses).toEqual([200, 200])
+
+        const finalOrder = await prisma.order.findUnique({ where: { id: order.id } })
+        expect(finalOrder).not.toBeNull()
+        expect(['READY', 'CANCELLED']).toContain(finalOrder!.status)
+        expect(finalOrder!.terminalAt).toBeDefined()
+      })
+    })
+  })
 })

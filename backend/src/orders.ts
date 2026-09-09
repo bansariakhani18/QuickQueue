@@ -109,6 +109,78 @@ export async function listActiveOrders(
   })
 }
 
+export type TransitionStatus = 'READY' | 'COLLECTED' | 'CANCELLED'
+
+const ALLOWED_TRANSITIONS: Record<string, TransitionStatus[]> = {
+  PREPARING: ['READY', 'CANCELLED'],
+  READY: ['COLLECTED', 'CANCELLED'],
+}
+
+export async function transitionOrderStatus(
+  restaurantId: string,
+  orderId: string,
+  targetStatus: TransitionStatus,
+): Promise<OrderRecord> {
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<
+      { id: string; status: string }[]
+    >`SELECT id, status FROM orders WHERE id = ${orderId} AND restaurant_id = ${restaurantId} FOR UPDATE`
+
+    if (rows.length === 0) {
+      throw new OrderNotFoundError(`Order ${orderId} not found`)
+    }
+
+    const row = rows[0]!
+    const currentStatus = row.status
+
+    if (currentStatus === targetStatus && targetStatus === 'READY') {
+      const order = await tx.order.findUnique({ where: { id: orderId } })
+      return order!
+    }
+
+    const allowed = ALLOWED_TRANSITIONS[currentStatus]
+    if (!allowed || !allowed.includes(targetStatus)) {
+      throw new TransitionError(
+        `Cannot transition from ${currentStatus} to ${targetStatus}`,
+      )
+    }
+
+    const now = new Date()
+    const updateData: Record<string, unknown> = { status: targetStatus }
+
+    if (targetStatus === 'READY') {
+      updateData.readyAt = now
+    } else if (targetStatus === 'COLLECTED') {
+      updateData.collectedAt = now
+      updateData.terminalAt = now
+    } else if (targetStatus === 'CANCELLED') {
+      updateData.cancelledAt = now
+      updateData.terminalAt = now
+    }
+
+    const order = await tx.order.update({
+      where: { id: orderId },
+      data: updateData,
+    })
+
+    return order
+  })
+}
+
+export class OrderNotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'OrderNotFoundError'
+  }
+}
+
+export class TransitionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'TransitionError'
+  }
+}
+
 export class ValidationError extends Error {
   constructor(message: string) {
     super(message)
