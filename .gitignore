@@ -19,6 +19,9 @@ postgres-data/
 .DS_Store
 Thumbs.db
 
+# Internal development documents
+QuickQueue_Build_Playbook.md
+
 # Editor settings
 .idea/
 .vscode/
