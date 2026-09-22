@@ -1,4 +1,11 @@
 import { PrismaClient } from '@prisma/client'
+import { randomUUID } from 'node:crypto'
+import {
+  getConfigFromEnv,
+  sendWhatsAppTemplate,
+  WhatsAppApiError,
+  type WhatsAppConfig,
+} from './whatsappClient.js'
 
 const prisma = new PrismaClient()
 
@@ -10,19 +17,19 @@ export interface NotificationPayload {
 
 export type FailureType = 'transient' | 'permanent'
 
+export interface NotificationSendResult {
+  providerMessageId: string
+}
+
 export interface NotificationSender {
-  send(payload: NotificationPayload): Promise<void>
+  send(payload: NotificationPayload): Promise<NotificationSendResult>
 }
 
 let failPredicate: ((payload: NotificationPayload) => FailureType | null) | null = null
 
-export function setNotificationSender(_s: NotificationSender): void {
-  // Phase 12 will replace this with real WhatsApp integration
-}
-
-export function getNotificationSender(): NotificationSender {
+export function createMockSender(): NotificationSender {
   return {
-    async send(payload: NotificationPayload): Promise<void> {
+    async send(payload: NotificationPayload): Promise<NotificationSendResult> {
       const result = failPredicate?.(payload)
       if (result === 'transient') {
         throw new Error('Mock transient failure')
@@ -30,6 +37,32 @@ export function getNotificationSender(): NotificationSender {
       if (result === 'permanent') {
         throw new Error('Mock permanent failure')
       }
+      return { providerMessageId: `mock-message-id-${randomUUID()}` }
+    },
+  }
+}
+
+let sender: NotificationSender = createMockSender()
+
+export function setNotificationSender(s: NotificationSender): void {
+  sender = s
+}
+
+export function getNotificationSender(): NotificationSender {
+  return sender
+}
+
+export function createRealWhatsAppSender(config?: WhatsAppConfig): NotificationSender | null {
+  const resolvedConfig = config ?? getConfigFromEnv()
+  if (!resolvedConfig) return null
+
+  return {
+    async send(payload: NotificationPayload): Promise<NotificationSendResult> {
+      const result = await sendWhatsAppTemplate(resolvedConfig, {
+        to: payload.customerPhone,
+        bodyParameters: [],
+      })
+      return { providerMessageId: result.providerMessageId }
     },
   }
 }
@@ -40,6 +73,75 @@ export function setSendFailurePredicate(fn: (payload: NotificationPayload) => Fa
 
 export function clearSendFailurePredicate(): void {
   failPredicate = null
+}
+
+export type SendFailureKind = 'transient' | 'permanent' | 'unknown'
+
+export interface SendFailureInfo {
+  kind: SendFailureKind
+  errorCode: string
+  errorMessage: string
+}
+
+const MAX_ERROR_MESSAGE_LENGTH = 2000
+
+function buildWhatsAppErrorMessage(err: WhatsAppApiError): string {
+  const parts: string[] = []
+  const meta = err.meta
+  if (meta?.type) parts.push(meta.type)
+  if (meta?.message) {
+    parts.push(meta.message)
+  } else {
+    parts.push(err.message)
+  }
+  if (meta?.errorSubcode !== undefined) parts.push(`subcode=${meta.errorSubcode}`)
+  if (meta?.fbtraceId) parts.push(`fbtrace=${meta.fbtraceId}`)
+  return parts.join(' - ').slice(0, MAX_ERROR_MESSAGE_LENGTH)
+}
+
+function whatsappErrorCode(err: WhatsAppApiError): string | null {
+  const meta = err.meta
+  if (meta?.code !== undefined) return String(meta.code)
+  if (meta?.errorSubcode !== undefined) return String(meta.errorSubcode)
+  return null
+}
+
+export function classifySendError(err: unknown): SendFailureInfo {
+  if (err instanceof WhatsAppApiError) {
+    const status = err.status
+    const meta = err.meta
+
+    if (status === undefined) {
+      return { kind: 'transient', errorCode: 'NO_RESPONSE', errorMessage: buildWhatsAppErrorMessage(err) }
+    }
+
+    if (status >= 500) {
+      return { kind: 'transient', errorCode: `HTTP_${status}`, errorMessage: buildWhatsAppErrorMessage(err) }
+    }
+
+    if (status === 429 || meta?.code === 130429 || meta?.errorSubcode === 130429 || meta?.code === 80007) {
+      return { kind: 'transient', errorCode: 'RATE_LIMITED', errorMessage: buildWhatsAppErrorMessage(err) }
+    }
+
+    if (meta?.type === 'OAuthException') {
+      const code = whatsappErrorCode(err)
+      return { kind: 'permanent', errorCode: code ? `META_${code}` : 'META_AUTH', errorMessage: buildWhatsAppErrorMessage(err) }
+    }
+
+    const code = whatsappErrorCode(err)
+    return { kind: 'unknown', errorCode: code ? `META_${code}` : `HTTP_${status}`, errorMessage: buildWhatsAppErrorMessage(err) }
+  }
+
+  const message = err instanceof Error ? err.message : String(err)
+
+  if (message.includes('transient')) {
+    return { kind: 'transient', errorCode: 'MOCK_TRANSIENT', errorMessage: message.slice(0, MAX_ERROR_MESSAGE_LENGTH) }
+  }
+  if (message.includes('permanent')) {
+    return { kind: 'permanent', errorCode: 'MOCK_PERMANENT', errorMessage: message.slice(0, MAX_ERROR_MESSAGE_LENGTH) }
+  }
+
+  return { kind: 'unknown', errorCode: 'UNKNOWN', errorMessage: message.slice(0, MAX_ERROR_MESSAGE_LENGTH) }
 }
 
 const MAX_RETRIES = 3
@@ -102,18 +204,21 @@ async function processAttempt(attemptId: string): Promise<void> {
   }
 
   try {
-    await getNotificationSender().send(payload)
+    const result = await getNotificationSender().send(payload)
     await prisma.notificationAttempt.update({
       where: { id: attemptId },
       data: {
         jobStatus: 'SENT',
         sentAt: new Date(),
+        providerMessageId: result.providerMessageId,
+        errorCode: null,
+        errorMessage: null,
       },
     })
   } catch (err) {
-    const isTransient = err instanceof Error && err.message.includes('transient')
+    const failure = classifySendError(err)
 
-    if (isTransient && attempt.retryCount < MAX_RETRIES) {
+    if (failure.kind === 'transient' && attempt.retryCount < MAX_RETRIES) {
       const nextRetryAt = new Date(Date.now() + getRetryBackoffMs())
       await prisma.notificationAttempt.update({
         where: { id: attemptId },
@@ -122,6 +227,8 @@ async function processAttempt(attemptId: string): Promise<void> {
           jobStatus: 'PENDING',
           claimedAt: null,
           nextRetryAt,
+          errorCode: failure.errorCode,
+          errorMessage: failure.errorMessage,
         },
       })
     } else {
@@ -130,9 +237,15 @@ async function processAttempt(attemptId: string): Promise<void> {
         data: {
           jobStatus: 'FAILED',
           failedAt: new Date(),
+          errorCode: failure.errorCode,
+          errorMessage: failure.errorMessage,
         },
       })
     }
+
+    console.warn(
+      `[notification] send failed attempt=${attemptId} kind=${failure.kind} code=${failure.errorCode}`,
+    )
   }
 }
 

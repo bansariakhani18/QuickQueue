@@ -165,6 +165,37 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 - Build passes ✅
 - 90 tests total across all suites ✅
 
+### Phase 12 — Real WhatsApp Integration: ✅ COMPLETE AND VERIFIED (uncommitted)
+
+Implementation, tests, and real-Meta live verification are complete (uncommitted).
+
+- `backend/src/whatsappClient.ts`: Real Meta WhatsApp Cloud API sender — `sendWhatsAppTemplate` POSTs to `https://graph.facebook.com/{apiVersion}/{phoneNumberId}/messages` with the access token as `Bearer`; parses the real `messages[0].id` as the provider message ID; structured `WhatsAppApiError` carrying HTTP status + Meta error metadata; `getConfigFromEnv()` fail-closed (returns null when any required env var is missing) ✅
+- `backend/src/processor.ts`: `createRealWhatsAppSender` wraps the real client and returns the real provider message ID; `classifySendError` maps failures to transient/permanent/unknown with codes (`HTTP_*`, `META_*`, `NO_RESPONSE`, `RATE_LIMITED`, `UNKNOWN`) written to `NotificationAttempt.errorCode`/`errorMessage` (truncated, never containing the token) ✅
+- `backend/src/server.ts`: installs the real sender at startup when the env config is present; otherwise the mock sender stays (fail-closed) ✅
+- Real test notification successfully sent through the real Cloud API: the correct `NotificationAttempt` was persisted as `SENT` with `sentAt` and the **real provider message ID** (`providerMessageId`) stored; stale `errorCode`/`errorMessage` cleared; the WhatsApp message was actually received on the recipient phone ✅
+- Live verification performed in the earlier session: two real sends returned SENT with real wamids (Phase 13 prerequisites confirmed) ✅
+- Sender/error-handling tests pass: `backend/src/__tests__/whatsappSender.test.ts` (5 tests) and the Phase 12 suite in `backend/src/__tests__/processor.test.ts` (6 tests) ✅
+- Full suite 123/123 pass; typecheck and build pass ✅
+- **FR-045 (real send → real provider message ID persisted → attempt SENT → message received): validated** ✅
+- **FR-046 (dynamic restaurant/display-token content in the message template): NOT validated** — the static test template did not demonstrate dynamic restaurant/display-token content.
+
+### Phase 13 — Webhook Receiver: ✅ COMPLETE AND VERIFIED (uncommitted)
+
+Implementation and tests exist (uncommitted). The Playbook's live verification step — "send a real test notification, let the real delivery/read webhook events arrive, and confirm the attempt's status updated correctly in the database" — has been satisfied by real Meta events (see live evidence below).
+
+- `backend/src/webhook.ts`: `webhookRouter` mounted in `app.ts` **before** `express.json()` (fail-closed by design — no body parser can run before signature verification) ✅
+- GET challenge-response handshake (`hub.mode`/`hub.verify_token`/`hub.challenge`) ✅
+- POST signature verification via `X-Hub-Signature-256` (HMAC-SHA256, `timingSafeEqual`), rejecting before any parsing per NFR-009 ✅
+- Correlation via real `providerMessageId` on `NotificationAttempt` — never any client-supplied tenant identifier ✅
+- Status mapping: `sent` → acknowledged/no state change; `delivered` → `DELIVERED` (only from `SENT`); `read` → `READ` (only from `SENT`/`DELIVERED`); `failed` → logged/no state change; unknown → ignored ✅
+- Idempotency: duplicate events no-op; out-of-order events never regress `jobStatus` backward ✅
+- Unknown attempt, deactivated restaurant, disconnected connection, phone-number mismatch all safely ignored + logged (return 200) ✅
+- `backend/src/__tests__/webhook.test.ts`: **22 tests pass** (re-run in the audit; full suite previously 123/123 across 3 runs, typecheck/build clean) — tests use the **real observed** payload structure (`entry[].changes[].value.statuses[]`, `statuses[].id` = providerMessageId, `metadata.phone_number_id`, WABA id 1436125048387918, recipient wa_id 919712238366), not a guessed one ✅
+- Live evidence — handshake/subscription: Meta callback (`GET /webhook`) verification succeeded; QuickQueue app is subscribed to the correct WABA; real `POST /webhook` events received; real `X-Hub-Signature-256` validation succeeded ✅
+- Live evidence — real `delivered` and `read` events (previously unrecorded): real Meta `message_status` events for prior live attempts `72836a8a-fc1a-4861-abb4-2181485dbcef` (attempt 2) and `626dca3b-6007-4f4e-9748-966ec833736c` (attempt 3) are confirmed in the database: both are `jobStatus = READ`, `deliveredAt = 2026-09-22T19:23:05Z`, `readAt = 2026-09-22T19:23:16Z`. The ngrok log shows the corresponding real webhook POSTs (`delivered` at ~00:53:05/06 +05:30, `read` at ~00:53:16/17 +05:30), all HTTP 200. Correlation was through `providerMessageId`; both correct attempts transitioned `SENT → DELIVERED → READ` with timestamps populated, and no unrelated attempt was modified. **This demonstrates the real delivered/read path end-to-end.**
+- Distinction (latest attempt): the most recent disposable test attempt `abd5fc36-0eeb-46a8-bd25-9976457fae28` remained `SENT` during its ~28-minute observation window and received no subsequent webhook. That lack of a delivered/read event for that single attempt is not an implementation failure — earlier real attempts did subsequently produce actual `delivered` and `read` events whose DB transitions were observed. The live delivered/read path is demonstrated; the `sent` event for the latest attempt was correctly acknowledged (no state change, per design).
+- Phase 12 (real WhatsApp sender) prerequisites all confirmed live during earlier session (two real sends SENT with real wamids).
+
 ---
 
 ## PostgreSQL Environment
@@ -201,10 +232,9 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 | Phase 9 — Background Processor | ✅ Complete | SKIP LOCKED claiming, stuck recovery, 9 tests |
 | Phase 10 — Retry Classification & RECALL | ✅ Complete | Transient retry with backoff, permanent fail, RECALL, 16 tests |
 | Phase 11 — Retention / Phone Scrubbing | ✅ Complete | terminalAt-based cleanup, configurable retention, idempotent, 5 tests |
-| Phase 12 — Real WhatsApp Integration | ⬜ Not started | Next phase to implement |
+| Phase 12 — Real WhatsApp Integration | ✅ Complete & verified | Real sender live-tested; real providerMessageId persisted; attempt SENT; message received; FR-045 validated, FR-046 not (static template) |
 | Phase 11 — Retention / Phone Scrubbing | ⬜ Not started | |
-| Phase 12 — Real WhatsApp Integration | ⬜ Not started | |
-| Phase 13 — Webhook Receiver | ⬜ Not started | |
+| Phase 13 — Webhook Receiver | ✅ Complete & verified | 22 tests pass; real signature/sent + real delivered/read events confirmed (attempts 72836a8a/626dca3b → READ); latest disposable attempt stayed SENT |
 | Phase 14 — STOP / Opt-Out | ⬜ Not started | |
 | Phase 15 — Embedded Signup | ⬜ Not started | |
 | Phase 16 — Restaurant Deactivation | ⬜ Not started | |
@@ -219,4 +249,4 @@ Verified against `QuickQueue_Build_Playbook.md` Phase 3 requirements:
 
 ## Next Step
 
-**Phase 12 — Real WhatsApp Integration (Development/Test Environment Only)** per `QuickQueue_Build_Playbook.md`.
+**Phase 14 — STOP / Opt-Out** per `QuickQueue_Build_Playbook.md`.

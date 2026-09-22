@@ -4,6 +4,7 @@ import { sessionMiddleware, authRouter } from './auth.js'
 import { originValidation } from './origin.js'
 import { createRateLimiter } from './rateLimit.js'
 import { ordersRouter } from './ordersRouter.js'
+import { webhookRouter } from './webhook.js'
 
 const app = express()
 const prisma = new PrismaClient()
@@ -20,6 +21,7 @@ const resetRequestRateLimiter = createRateLimiter({
   keyPrefix: 'rl:reset',
 })
 
+app.use('/webhook', webhookRouter)
 app.use(express.json())
 app.use(sessionMiddleware)
 app.use(originValidation)

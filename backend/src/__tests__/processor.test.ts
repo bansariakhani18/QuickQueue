@@ -10,8 +10,12 @@ import {
   recallOrder,
   RecallError,
   scrubExpiredPhones,
+  setNotificationSender,
+  createMockSender,
+  classifySendError,
   type FailureType,
 } from '../processor.js'
+import { WhatsAppApiError } from '../whatsappClient.js'
 
 const prisma = new PrismaClient()
 
@@ -866,6 +870,211 @@ describe('Phase 11 — Retention / Phone Scrubbing', () => {
     expect(updatedAttempt!.sentAt).not.toBeNull()
 
     await prisma.notificationAttempt.delete({ where: { id: attempt.id } })
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
+  })
+})
+
+describe('Phase 12 — Real sender result and structured error handling', () => {
+  const origBackoff = process.env.RETRY_BACKOFF_MS
+
+  async function createRestaurant(email: string) {
+    return prisma.restaurant.create({
+      data: {
+        name: `Phase12 ${email}`,
+        email,
+        passwordHash: 'hash',
+        status: 'ACTIVE',
+      },
+    })
+  }
+
+  async function createOrder(restaurantId: string, phone: string) {
+    return prisma.order.create({
+      data: {
+        restaurantId,
+        displayToken: `p12-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        customerPhone: phone,
+        consentGiven: true,
+        consentMethod: 'VERBAL_STAFF_CONFIRMED',
+        status: 'READY',
+      },
+    })
+  }
+
+  async function createAttempt(orderId: string, attemptNumber = 1) {
+    return prisma.notificationAttempt.create({
+      data: {
+        orderId,
+        attemptNumber,
+        channel: 'WHATSAPP',
+        jobStatus: 'PENDING',
+      },
+    })
+  }
+
+  beforeAll(async () => {
+    await prisma.$connect()
+    process.env.RETRY_BACKOFF_MS = '0'
+  })
+
+  afterAll(async () => {
+    if (origBackoff === undefined) {
+      delete process.env.RETRY_BACKOFF_MS
+    } else {
+      process.env.RETRY_BACKOFF_MS = origBackoff
+    }
+    await prisma.$disconnect()
+  })
+
+  beforeEach(async () => {
+    clearSendFailurePredicate()
+    setNotificationSender(createMockSender())
+    await prisma.notificationAttempt.deleteMany({ where: { jobStatus: { in: ['PENDING', 'PROCESSING'] } } })
+  })
+
+  it('persists the providerMessageId returned by the real sender and clears stale error detail', async () => {
+    const restaurant = await createRestaurant(`p12-ok-${Date.now()}@ex.com`)
+    const order = await createOrder(restaurant.id, '+14155559901')
+    const attempt = await createAttempt(order.id)
+    await prisma.notificationAttempt.update({
+      where: { id: attempt.id },
+      data: { errorCode: 'HTTP_500', errorMessage: 'stale' },
+    })
+
+    setNotificationSender({
+      async send() {
+        return { providerMessageId: 'wamid.test.abc123' }
+      },
+    })
+
+    await claimAndProcessOne()
+
+    const a = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+    expect(a!.jobStatus).toBe('SENT')
+    expect(a!.providerMessageId).toBe('wamid.test.abc123')
+    expect(a!.errorCode).toBeNull()
+    expect(a!.errorMessage).toBeNull()
+    expect(a!.sentAt).not.toBeNull()
+
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
+  })
+
+  it('treats a transient WhatsApp error as a normal retry (FR-033)', async () => {
+    const restaurant = await createRestaurant(`p12-transient-${Date.now()}@ex.com`)
+    const order = await createOrder(restaurant.id, '+14155559902')
+    const attempt = await createAttempt(order.id)
+
+    setNotificationSender({
+      async send() {
+        throw new WhatsAppApiError('WhatsApp Cloud API returned HTTP 500', {
+          status: 500,
+          meta: { message: 'An internal server error occurred', code: 578 },
+        })
+      },
+    })
+
+    await claimAndProcessOne()
+    let a = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+    expect(a!.jobStatus).toBe('PENDING')
+    expect(a!.retryCount).toBe(1)
+    expect(a!.attemptNumber).toBe(1)
+    expect(a!.errorCode).toBe('HTTP_500')
+    expect(a!.errorMessage).toContain('An internal server error occurred')
+    expect(a!.nextRetryAt).not.toBeNull()
+
+    await claimAndProcessOne()
+    a = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+    expect(a!.jobStatus).toBe('PENDING')
+    expect(a!.retryCount).toBe(2)
+
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
+  })
+
+  it('treats a permanent WhatsApp error as FAILED with no retry', async () => {
+    const restaurant = await createRestaurant(`p12-perm-${Date.now()}@ex.com`)
+    const order = await createOrder(restaurant.id, '+14155559903')
+    const attempt = await createAttempt(order.id)
+
+    setNotificationSender({
+      async send() {
+        throw new WhatsAppApiError('WhatsApp Cloud API returned HTTP 403', {
+          status: 403,
+          meta: { type: 'OAuthException', code: 190, message: 'Invalid OAuth access token' },
+        })
+      },
+    })
+
+    await claimAndProcessOne()
+    let a = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+    expect(a!.jobStatus).toBe('FAILED')
+    expect(a!.retryCount).toBe(0)
+    expect(a!.failedAt).not.toBeNull()
+    expect(a!.errorCode).toBe('META_190')
+    expect(a!.errorMessage).toContain('Invalid OAuth access token')
+
+    await claimAndProcessOne()
+    a = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+    expect(a!.jobStatus).toBe('FAILED')
+    expect(a!.retryCount).toBe(0)
+
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
+  })
+
+  it('persists errorCode/errorMessage safely and without secrets', () => {
+    const httpError = classifySendError(
+      new WhatsAppApiError('boom', { status: 500, meta: { message: 'Internal error' } }),
+    )
+    expect(httpError.kind).toBe('transient')
+    expect(httpError.errorCode).toBe('HTTP_500')
+    expect(httpError.errorMessage).not.toContain('token')
+
+    const network = classifySendError(new WhatsAppApiError('Network error calling WhatsApp Cloud API'))
+    expect(network.kind).toBe('transient')
+    expect(network.errorCode).toBe('NO_RESPONSE')
+
+    const unexpected = classifySendError(new Error('Some mystery failure'))
+    expect(unexpected.kind).toBe('unknown')
+    expect(unexpected.errorCode).toBe('UNKNOWN')
+  })
+
+  it('keeps the default mock sender working end-to-end', async () => {
+    const restaurant = await createRestaurant(`p12-mock-${Date.now()}@ex.com`)
+    const order = await createOrder(restaurant.id, '+14155559904')
+    const attempt = await createAttempt(order.id)
+
+    await claimAndProcessOne()
+
+    const a = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+    expect(a!.jobStatus).toBe('SENT')
+    expect(a!.providerMessageId).toMatch(/^mock-message-id-/)
+
+    await prisma.order.delete({ where: { id: order.id } })
+    await prisma.restaurant.delete({ where: { id: restaurant.id } })
+  })
+
+  it('fails closed on an unexpected non-WhatsApp error instead of silently retrying', async () => {
+    const restaurant = await createRestaurant(`p12-unknown-${Date.now()}@ex.com`)
+    const order = await createOrder(restaurant.id, '+14155559905')
+    const attempt = await createAttempt(order.id)
+
+    setNotificationSender({
+      async send() {
+        throw new Error('Some unexpected internal failure')
+      },
+    })
+
+    await claimAndProcessOne()
+
+    const a = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+    expect(a!.jobStatus).toBe('FAILED')
+    expect(a!.retryCount).toBe(0)
+    expect(a!.errorCode).toBe('UNKNOWN')
+    expect(a!.errorMessage).toContain('Some unexpected internal failure')
+
     await prisma.order.delete({ where: { id: order.id } })
     await prisma.restaurant.delete({ where: { id: restaurant.id } })
   })
