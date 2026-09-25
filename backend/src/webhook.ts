@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import express from 'express'
 import { PrismaClient } from '@prisma/client'
+import { normalizePhone, PhoneNormalizationError } from './orders.js'
 
 const prisma = new PrismaClient()
 
@@ -141,6 +142,136 @@ async function applyStatusEvent(event: ParsedStatusEvent): Promise<void> {
   await transitionAttempt(attempt.id, attempt.orderId, event)
 }
 
+interface ParsedInboundMessage {
+  sender: string
+  type: string
+  textBody: string
+  phoneNumberId: string
+}
+
+function parseInboundMessages(payload: unknown): ParsedInboundMessage[] {
+  if (typeof payload !== 'object' || payload === null) return []
+  const root = payload as Record<string, unknown>
+  if (!Array.isArray(root.entry)) return []
+
+  const messages: ParsedInboundMessage[] = []
+
+  for (const entry of root.entry) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const changes = (entry as Record<string, unknown>).changes
+    if (!Array.isArray(changes)) continue
+
+    for (const change of changes) {
+      if (typeof change !== 'object' || change === null) continue
+      const value = (change as Record<string, unknown>).value
+      if (typeof value !== 'object' || value === null) continue
+      const valueRecord = value as Record<string, unknown>
+
+      const metadata = valueRecord.metadata
+      const phoneNumberId =
+        typeof metadata === 'object' && metadata !== null
+          ? typeof (metadata as Record<string, unknown>).phone_number_id === 'string'
+            ? ((metadata as Record<string, unknown>).phone_number_id as string)
+            : ''
+          : ''
+
+      const messageList = valueRecord.messages
+      if (!Array.isArray(messageList)) continue
+
+      for (const message of messageList) {
+        if (typeof message !== 'object' || message === null) continue
+        const record = message as Record<string, unknown>
+        const sender = typeof record.from === 'string' ? record.from.trim() : ''
+        const type = typeof record.type === 'string' ? record.type : ''
+        const text = record.text
+        const textBody =
+          typeof text === 'object' && text !== null
+            ? typeof (text as Record<string, unknown>).body === 'string'
+              ? ((text as Record<string, unknown>).body as string)
+              : ''
+            : ''
+
+        if (sender === '' || type === '') continue
+        messages.push({ sender, type, textBody, phoneNumberId })
+      }
+    }
+  }
+
+  return messages
+}
+
+async function applyInboundMessage(message: ParsedInboundMessage): Promise<void> {
+  if (message.type !== 'text') {
+    console.info(`[webhook] inbound message type=${message.type} acknowledged (no opt-out processing)`)
+    return
+  }
+
+  const isOptOut = message.textBody.trim().toUpperCase() === 'STOP'
+  if (!isOptOut) {
+    console.info('[webhook] inbound text message acknowledged (not an opt-out keyword)')
+    return
+  }
+
+  if (message.phoneNumberId === '') {
+    console.info('[webhook] inbound opt-out has no phone_number_id metadata (ignored)')
+    return
+  }
+
+  const connection = await prisma.whatsAppConnection.findFirst({
+    where: { phoneNumberId: message.phoneNumberId },
+    select: {
+      restaurantId: true,
+      connectionStatus: true,
+      restaurant: { select: { status: true } },
+    },
+  })
+
+  if (!connection) {
+    console.info(`[webhook] inbound opt-out for unknown phoneNumberId=${message.phoneNumberId} (ignored)`)
+    return
+  }
+
+  if (connection.restaurant.status !== 'ACTIVE') {
+    console.info(`[webhook] inbound opt-out for inactive restaurant restaurantId=${connection.restaurantId} (ignored)`)
+    return
+  }
+
+  if (connection.connectionStatus !== 'CONNECTED') {
+    console.info(
+      `[webhook] inbound opt-out for non-connected connection restaurantId=${connection.restaurantId} (ignored)`,
+    )
+    return
+  }
+
+  const restaurantId = connection.restaurantId
+
+  let phoneNormalized: string
+  try {
+    phoneNormalized = normalizeIncomingSender(message.sender)
+  } catch (err) {
+    if (err instanceof PhoneNormalizationError) {
+      console.info('[webhook] inbound opt-out with unparseable sender ignored')
+      return
+    }
+    throw err
+  }
+
+  await prisma.notificationOptOut.upsert({
+    where: {
+      restaurantId_phoneNormalized: { restaurantId, phoneNormalized },
+    },
+    create: { restaurantId, phoneNormalized },
+    update: {},
+  })
+
+  console.info(`[webhook] opt-out recorded restaurantId=${restaurantId}`)
+}
+
+function normalizeIncomingSender(raw: string): string {
+  const withPrefix = raw.startsWith('+') ? raw : `+${raw}`
+  return normalizePhone(withPrefix)
+}
+
 type TransitionTarget = 'SENT' | 'DELIVERED' | 'READ' | 'FAILED' | 'IGNORED'
 
 function mapEventStatus(status: string): TransitionTarget {
@@ -219,8 +350,10 @@ webhookRouter.post('/', async (req, res) => {
   }
 
   const events = parseStatusEvents(payload)
-  if (events.length === 0) {
-    console.info('[webhook] acknowledged event with no message_status entries')
+  const inboundMessages = parseInboundMessages(payload)
+
+  if (events.length === 0 && inboundMessages.length === 0) {
+    console.info('[webhook] acknowledged event with no message_status or inbound message entries')
     res.status(200).json({ status: 'ok' })
     return
   }
@@ -228,6 +361,9 @@ webhookRouter.post('/', async (req, res) => {
   try {
     for (const event of events) {
       await applyStatusEvent(event)
+    }
+    for (const inboundMessage of inboundMessages) {
+      await applyInboundMessage(inboundMessage)
     }
   } catch (err) {
     console.error('[webhook] processing error', err instanceof Error ? err.message : String(err))

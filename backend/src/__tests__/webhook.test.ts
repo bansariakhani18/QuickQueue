@@ -3,6 +3,7 @@ import request from 'supertest'
 import { createHmac } from 'node:crypto'
 import { PrismaClient } from '@prisma/client'
 import { app } from '../app.js'
+import { createOrder as createOrderRecord, transitionOrderStatus } from '../orders.js'
 
 const prisma = new PrismaClient()
 
@@ -80,6 +81,63 @@ async function createOrder(restaurantId: string) {
       consentMethod: 'VERBAL_STAFF_CONFIRMED',
       status: 'READY',
     },
+  })
+}
+
+function inboundMessagePayload(
+  sender: string,
+  body: string,
+  opts: { type?: string; phoneNumberId?: string } = {},
+): string {
+  const messageType = opts.type ?? 'text'
+  const messageRecord: Record<string, unknown> = {
+    from: sender,
+    from_user_id: 'IN.1402493181270513',
+    id: `wamid.${Math.random().toString(36).slice(2)}`,
+    timestamp: SAMPLE_TIMESTAMP,
+  }
+  if (messageType === 'text') {
+    messageRecord.text = { body }
+  }
+  messageRecord.type = messageType
+
+  return JSON.stringify({
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: '1436125048387918',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: {
+                display_phone_number: '15551663891',
+                phone_number_id: opts.phoneNumberId ?? '1226137183925646',
+              },
+              contacts: [{ profile: { name: 'Bansri' }, wa_id: sender, user_id: 'IN.1402493181270513' }],
+              messages: [messageRecord],
+            },
+          },
+        ],
+      },
+    ],
+  })
+}
+
+async function createConnectedConnection(restaurantId: string, phoneNumberId: string) {
+  return prisma.whatsAppConnection.create({
+    data: {
+      restaurantId,
+      phoneNumberId,
+      connectionStatus: 'CONNECTED',
+    },
+  })
+}
+
+async function optOutCount(restaurantId: string, phoneNormalized: string) {
+  return prisma.notificationOptOut.count({
+    where: { restaurantId, phoneNormalized },
   })
 }
 
@@ -439,5 +497,252 @@ describe('WhatsApp webhook (Phase 13)', () => {
       .set('Content-Type', 'application/json')
       .send(bodyText)
     expect(res.status).toBe(400)
+  })
+})
+
+describe('WhatsApp webhook Phase 14: inbound STOP opt-out', () => {
+  beforeAll(async () => {
+    await prisma.$connect()
+    vi.stubEnv('WHATSAPP_WEBHOOK_VERIFY_TOKEN', VERIFY_TOKEN)
+    vi.stubEnv('WHATSAPP_APP_SECRET', APP_SECRET)
+  })
+
+  afterAll(async () => {
+    await cleanup()
+    vi.unstubAllEnvs()
+    await prisma.$disconnect()
+  })
+
+  afterEach(async () => {
+    await cleanup()
+  })
+
+  async function seedRestaurant(email: string, phoneNumberId: string, opts: { restaurantStatus?: string } = {}) {
+    const restaurant = await createRestaurant(
+      email,
+      opts.restaurantStatus === 'DEACTIVATED' ? 'DEACTIVATED' : 'ACTIVE',
+    )
+    await createConnectedConnection(restaurant.id, phoneNumberId)
+    return restaurant
+  }
+
+  it('records an opt-out for a STOP text from the real captured payload structure', async () => {
+    const restaurant = await seedRestaurant(`wh14-stop-${Date.now()}@example.com`, '1226137183925646')
+    const body = inboundMessagePayload('919712238366', 'STOP')
+
+    const res = await postWebhook(body)
+    expect(res.status).toBe(200)
+
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(1)
+  })
+
+  it('records an opt-out for lowercase and mixed-case stop', async () => {
+    const restaurant = await seedRestaurant(`wh14-lower-${Date.now()}@example.com`, '1226137183925646')
+
+    const lower = await postWebhook(inboundMessagePayload('919712238366', 'stop'))
+    expect(lower.status).toBe(200)
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(1)
+
+    const mixed = await postWebhook(inboundMessagePayload('919712238366', 'StOp'))
+    expect(mixed.status).toBe(200)
+  })
+
+  it('treats STOP with surrounding whitespace as an opt-out', async () => {
+    const restaurant = await seedRestaurant(`wh14-space-${Date.now()}@example.com`, '1226137183925646')
+
+    const res = await postWebhook(inboundMessagePayload('919712238366', '  STOP  '))
+    expect(res.status).toBe(200)
+
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(1)
+  })
+
+  it('is idempotent when the same STOP is delivered repeatedly', async () => {
+    const restaurant = await seedRestaurant(`wh14-idem-${Date.now()}@example.com`, '1226137183925646')
+
+    for (let i = 0; i < 3; i += 1) {
+      const res = await postWebhook(inboundMessagePayload('919712238366', 'STOP'))
+      expect(res.status).toBe(200)
+    }
+
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(1)
+  })
+
+  it('does not record an opt-out for a non-STOP text message', async () => {
+    const restaurant = await seedRestaurant(`wh14-nonstop-${Date.now()}@example.com`, '1226137183925646')
+
+    const res = await postWebhook(inboundMessagePayload('919712238366', 'where is my order?'))
+    expect(res.status).toBe(200)
+
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(0)
+  })
+
+  it('does not record an opt-out for a non-text inbound message', async () => {
+    const restaurant = await seedRestaurant(`wh14-img-${Date.now()}@example.com`, '1226137183925646')
+
+    const res = await postWebhook(inboundMessagePayload('919712238366', '', { type: 'image' }))
+    expect(res.status).toBe(200)
+
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(0)
+  })
+
+  it('scopes the opt-out to the restaurant owning the phone_number_id', async () => {
+    const restaurantA = await seedRestaurant(`wh14-isol-a-${Date.now()}@example.com`, 'phone-number-a')
+    const restaurantB = await seedRestaurant(`wh14-isol-b-${Date.now()}@example.com`, 'phone-number-b')
+
+    const res = await postWebhook(
+      inboundMessagePayload('919712238366', 'STOP', { phoneNumberId: 'phone-number-a' }),
+    )
+    expect(res.status).toBe(200)
+
+    expect(await optOutCount(restaurantA.id, '+919712238366')).toBe(1)
+    expect(await optOutCount(restaurantB.id, '+919712238366')).toBe(0)
+  })
+
+  it('safely ignores an inbound STOP for an unknown phone_number_id', async () => {
+    const restaurant = await createRestaurant(`wh14-unknown-pn-${Date.now()}@example.com`)
+
+    const res = await postWebhook(
+      inboundMessagePayload('919712238366', 'STOP', { phoneNumberId: 'unmapped-phone-number-id' }),
+    )
+    expect(res.status).toBe(200)
+
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(0)
+  })
+
+  it('safely ignores an inbound STOP for a deactivated restaurant', async () => {
+    const restaurant = await seedRestaurant(
+      `wh14-deact-${Date.now()}@example.com`,
+      '1226137183925646',
+      { restaurantStatus: 'DEACTIVATED' },
+    )
+
+    const res = await postWebhook(inboundMessagePayload('919712238366', 'STOP'))
+    expect(res.status).toBe(200)
+
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(0)
+  })
+
+  it('safely ignores an inbound STOP for a disconnected connection', async () => {
+    const restaurant = await createRestaurant(`wh14-disc-${Date.now()}@example.com`)
+    await prisma.whatsAppConnection.create({
+      data: {
+        restaurantId: restaurant.id,
+        phoneNumberId: '1226137183925646',
+        connectionStatus: 'DISCONNECTED',
+      },
+    })
+
+    const res = await postWebhook(inboundMessagePayload('919712238366', 'STOP'))
+    expect(res.status).toBe(200)
+
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(0)
+  })
+
+  it('rejects a STOP with a tampered signature before any processing', async () => {
+    const restaurant = await seedRestaurant(`wh14-tampered-${Date.now()}@example.com`, '1226137183925646')
+    const body = inboundMessagePayload('919712238366', 'STOP')
+
+    const res = await request(app)
+      .post('/webhook')
+      .set('X-Hub-Signature-256', 'sha256=' + 'a'.repeat(64))
+      .set('Content-Type', 'application/json')
+      .send(body)
+
+    expect(res.status).toBe(403)
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(0)
+  })
+
+  it('rejects a STOP missing a signature before any processing', async () => {
+    const restaurant = await seedRestaurant(`wh14-nosig-${Date.now()}@example.com`, '1226137183925646')
+    const body = inboundMessagePayload('919712238366', 'STOP')
+
+    const res = await request(app)
+      .post('/webhook')
+      .set('Content-Type', 'application/json')
+      .send(body)
+
+    expect(res.status).toBe(403)
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(0)
+  })
+
+  it('keeps processing Phase 13 status events when an inbound message is present', async () => {
+    const restaurant = await seedRestaurant(`wh14-combo-${Date.now()}@example.com`, '1226137183925646')
+    const order = await prisma.order.create({
+      data: {
+        restaurantId: restaurant.id,
+        displayToken: `wh14-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        customerPhone: '+919712238366',
+        consentGiven: true,
+        consentMethod: 'VERBAL_STAFF_CONFIRMED',
+        status: 'READY',
+      },
+    })
+    const providerMessageId = 'wamid-phase14-combo-delivered'
+    await createSentAttempt(order.id, providerMessageId)
+
+    const statusBody = JSON.parse(messageStatusPayload(providerMessageId, 'delivered'))
+    const inboundBody = JSON.parse(inboundMessagePayload('919712238366', 'STOP'))
+    const merged = {
+      ...statusBody,
+      entry: [
+        {
+          ...statusBody.entry[0],
+          changes: [
+            ...statusBody.entry[0].changes,
+            ...inboundBody.entry[0].changes,
+          ],
+        },
+      ],
+    }
+
+    const res = await postWebhook(JSON.stringify(merged))
+    expect(res.status).toBe(200)
+
+    const attempt = await prisma.notificationAttempt.findUnique({ where: { providerMessageId } })
+    expect(attempt?.jobStatus).toBe('DELIVERED')
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(1)
+  })
+
+  it('FR-028: an opt-out recorded via webhook STOP suppresses the READY attempt in the real order path', async () => {
+    const restaurant = await seedRestaurant(`wh14-fr028-${Date.now()}@example.com`, '1226137183925646')
+
+    const stop = await postWebhook(inboundMessagePayload('919712238366', 'STOP'))
+    expect(stop.status).toBe(200)
+    expect(await optOutCount(restaurant.id, '+919712238366')).toBe(1)
+
+    const order = await createOrderRecord(restaurant.id, {
+      displayToken: `fr028-${Date.now()}`,
+      customerPhone: '+919712238366',
+      consentGiven: true,
+    })
+
+    await transitionOrderStatus(restaurant.id, order.id, 'READY')
+
+    const attempts = await prisma.notificationAttempt.findMany({ where: { orderId: order.id } })
+    expect(attempts).toHaveLength(0)
+  })
+
+  it('FR-049: the same phone at a different restaurant is not suppressed', async () => {
+    const restaurantA = await seedRestaurant(`wh14-x-${Date.now()}@example.com`, 'phone-number-x')
+    const restaurantB = await seedRestaurant(`wh14-y-${Date.now()}@example.com`, 'phone-number-y')
+
+    const stop = await postWebhook(
+      inboundMessagePayload('919712238366', 'STOP', { phoneNumberId: 'phone-number-x' }),
+    )
+    expect(stop.status).toBe(200)
+    expect(await optOutCount(restaurantA.id, '+919712238366')).toBe(1)
+    expect(await optOutCount(restaurantB.id, '+919712238366')).toBe(0)
+
+    const orderB = await createOrderRecord(restaurantB.id, {
+      displayToken: `fr049-${Date.now()}`,
+      customerPhone: '+919712238366',
+      consentGiven: true,
+    })
+
+    await transitionOrderStatus(restaurantB.id, orderB.id, 'READY')
+
+    const attemptsB = await prisma.notificationAttempt.findMany({ where: { orderId: orderB.id } })
+    expect(attemptsB).toHaveLength(1)
+    expect(attemptsB[0]?.jobStatus).toBe('PENDING')
   })
 })

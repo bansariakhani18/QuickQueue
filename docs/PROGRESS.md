@@ -16,7 +16,7 @@
 
 ### Working Tree
 
-Uncommitted changes: Phase 8 (notification attempt creation), Phase 9 (background processor, claiming, crash recovery), Phase 10 (retry classification & RECALL with backoff enforcement), Phase 11 (retention / phone scrubbing).
+Uncommitted changes: Phase 8 (notification attempt creation), Phase 9 (background processor, claiming, crash recovery), Phase 10 (retry classification & RECALL with backoff enforcement), Phase 11 (retention / phone scrubbing), Phase 13 (webhook receiver), Phase 14 (STOP / opt-out).
 
 ---
 
@@ -196,6 +196,23 @@ Implementation and tests exist (uncommitted). The Playbook's live verification s
 - Distinction (latest attempt): the most recent disposable test attempt `abd5fc36-0eeb-46a8-bd25-9976457fae28` remained `SENT` during its ~28-minute observation window and received no subsequent webhook. That lack of a delivered/read event for that single attempt is not an implementation failure — earlier real attempts did subsequently produce actual `delivered` and `read` events whose DB transitions were observed. The live delivered/read path is demonstrated; the `sent` event for the latest attempt was correctly acknowledged (no state change, per design).
 - Phase 12 (real WhatsApp sender) prerequisites all confirmed live during earlier session (two real sends SENT with real wamids).
 
+### Phase 14 — STOP / Opt-Out: ✅ COMPLETE (uncommitted)
+
+Implementation, tests, and webhook-path live verification (via the real captured Meta payload) are complete (uncommitted).
+
+- `backend/src/webhook.ts`: processes inbound `value.messages[]` webhook events in addition to status events (FR-043/044 webhook surface) ✅
+- Opt-out detection: only supported text inbound messages whose `text.body`, trimmed and case-insensitively, equals `STOP` (FR-048; lowercase/mixed-case/whitespace handled, non-text and non-STOP text ignored) ✅
+- Restaurant resolution strictly from the provider-side `metadata.phone_number_id` via the existing `WhatsAppConnection` mapping (`findFirst({ where: { phoneNumberId } })`), never trusting any restaurant/order ID in the payload and never using the customer phone alone (NFR-009) ✅
+- Phone normalization reuses the existing `normalizePhone` from `orders.ts` (single source of truth, no second implementation); the Meta inbound sender is E.164 without a leading `+`, so the raw sender is prefixed with `+` before the existing normalizer → `919712238366` → `+919712238366` ✅
+- Safe-ignore paths (all logged, return 200): unknown/unmapped `phone_number_id`, deactivated restaurant, non-CONNECTED `WhatsAppConnection` (covers disconnected/inactive), unparseable sender ✅
+- Idempotent creation via the `@@unique([restaurantId, phoneNormalized])` upsert — repeated STOP creates exactly one `NotificationOptOut`, scoped per restaurant (FR-049) ✅
+- Signature-gated before any parsing: the Phase 13 `X-Hub-Signature-256` verification (raw body, `timingSafeEqual`, NFR-009) is untouched and applies to inbound messages too; invalid/missing signature → 403, malformed validly-signed JSON → 400 ✅
+- `backend/src/__tests__/webhook.test.ts`: **15 new Phase 14 tests pass** (real captured payload structure), plus all existing 22 Phase 13 tests remain green (full suite now **138/138**) ✅
+- Full suite 138/138 pass; typecheck passes; build passes; `git diff --check` clean ✅
+- **FR-048/FR-049 (webhook STOP → NotificationOptOut, per-restaurant scope): validated** via automated tests AND live replay ✅
+- **FR-028 (opt-out → READY creates no attempt; same phone at another restaurant not suppressed): validated** via the real order path (`createOrder` + `transitionOrderStatus`) in both automated tests and live fixture ✅
+- **Live webhook capability caveat:** the Meta platform token expired 2026-09-22 (Graph 401/error 190) and the free-tier ngrok URL has since rotated, so the Meta webhook subscription can no longer be reached or re-registered this session. Fresh live delivery is therefore blocked. To keep validation real, the **exact previously captured Meta-signed STOP payload** (real body + real `X-Hub-Signature-256` header) was replayed against the running backend: HTTP 200 and a real `NotificationOptOut` row (`restaurantId=eb8171be…`, `phoneNormalized=+919712238366`) was created; a second identical replay remained idempotent (still exactly 1 row). The live fixture restaurant got a `WhatsAppConnection` row (`phone_number_id=1226137183925646`, CONNECTED) via the existing schema — the same setup the integration tests use — because that is the architecture's only provider-side mapping and no production endpoint creates connections yet (Phase 15). Live READY-after-opt-out and cross-restaurant freedom were then confirmed against that fixture (opt-out row kept as evidence; the temporary live connection row was removed afterward to keep the automated test suite hermetic). ✅
+
 ---
 
 ## PostgreSQL Environment
@@ -235,7 +252,7 @@ Implementation and tests exist (uncommitted). The Playbook's live verification s
 | Phase 12 — Real WhatsApp Integration | ✅ Complete & verified | Real sender live-tested; real providerMessageId persisted; attempt SENT; message received; FR-045 validated, FR-046 not (static template) |
 | Phase 11 — Retention / Phone Scrubbing | ⬜ Not started | |
 | Phase 13 — Webhook Receiver | ✅ Complete & verified | 22 tests pass; real signature/sent + real delivered/read events confirmed (attempts 72836a8a/626dca3b → READ); latest disposable attempt stayed SENT |
-| Phase 14 — STOP / Opt-Out | ⬜ Not started | |
+| Phase 14 — STOP / Opt-Out | ✅ Complete | 15 new webhook tests + existing 22 intact (138/138); real captured STOP replay → opt-out created + READY suppressed; FR-048/049/028 validated live; live Meta delivery blocked (expired token/rotated ngrok URL) |
 | Phase 15 — Embedded Signup | ⬜ Not started | |
 | Phase 16 — Restaurant Deactivation | ⬜ Not started | |
 | Phase 17 — Frontend Core | ⬜ Not started | |
@@ -249,4 +266,4 @@ Implementation and tests exist (uncommitted). The Playbook's live verification s
 
 ## Next Step
 
-**Phase 14 — STOP / Opt-Out** per `QuickQueue_Build_Playbook.md`.
+**Phase 15 — Embedded Signup** per `QuickQueue_Build_Playbook.md`.
