@@ -287,7 +287,32 @@ FR-045 requirements interpreted: (a) V1 uses exactly **one** QuickQueue-authored
 - Verification run: Phase 15 suites green (crypto 15, connections 13, restaurantSender 10, display-name+boundary 13, template-provisioning+boundary 15, templateSnapshot 3); full backend suite **204/204**; typecheck passes; build passes; `git diff --check` clean ✅ (one transient `connections.test.ts` `beforeAll` hook timeout under 10-parallel-worker DB contention during the first run — passed on isolation re-run and in the full suite; no code/test changes made for it)
 - **Live validations confirmed: none performed this session.** Embedded Signup, per-WABA template provisioning/approval (FR-045), and sender display-name outcome remain **externally blocked/unvalidated** (SRS §22) — Meta token expired 2026-09-22, Meta Tech Provider approval outstanding, no second real restaurant/WABA available, and the concrete Embedded Signup/template-provisioning/display-name Meta contracts are not documented in the repository (boundaries deliberately perform no call until confirmed).
 - Implemented and locally verified: Steps 1–5 (crypto foundations, signup endpoints, per-restaurant sender, display-name + fallback orchestration, FR-045 snapshots + provisioning orchestration) — all via deterministic unit/integration tests against the Docker PostgreSQL, with the two Meta boundaries mocked.
-- Status per Playbook: Phase 15 implementation is complete and verified; the Playbook's ending step is "**Verify and commit**" — commit remains a human decision (nothing staged/committed/pushed in this session). The next Playbook phase is **Phase 16 — Restaurant Deactivation** (FR-052/FR-053), NOT started; do not start it until this session's work is committed and live validation blockers are resolved.
+- Status per Playbook: Phase 15 implementation is complete and verified; the Playbook's ending step is "**Verify and commit**" — commit remains a human decision (nothing staged/committed/pushed in this session). Phase 15 is committed as `1940060`; **Phase 16 — Restaurant Deactivation** (FR-052/FR-053) is now in progress.
+
+### Phase 16 — Restaurant Deactivation: IN PROGRESS (implementation + Playbook verification complete; uncommitted)
+
+Implemented per frozen SRS §9.12 (FR-052/FR-053) and Playbook Phase 16 ("implement it exactly as written, not an approximation"). No schema change — `Restaurant.status` / `deactivatedAt` have existed since the initial schema migration.
+
+**Step 1 — Blocking guards (FR-052)** ✅
+
+- `auth.ts` `/login`: a correct-password login for a `DEACTIVATED` restaurant is rejected `401 { error: 'Account is deactivated' }`, no session set. `requireAuth` unchanged; existing sessions and authenticated reads are not blocked.
+- `orders.ts` `createOrder`: rejects `DEACTIVATED` restaurants before any validation/create (409).
+- `orders.ts` `transitionOrderStatus`: rejects only the `READY` target, checked inside the transaction (also blocks idempotent re-READY); `COLLECTED`/`CANCELLED` remain allowed (FR-052 does not require blocking them).
+- `processor.ts` `recallOrder`: rejects `DEACTIVATED` inside the transaction; no new RECALL attempt is created.
+- `processor.ts` `processAttempt` retry path: re-checks the restaurant's status (fresh read) before scheduling an automatic retry; a transient failure on a now-deactivated restaurant finalizes the attempt as `FAILED` (existing persistence semantics, `retryCount` unchanged, no `PENDING`/`nextRetryAt`) — FR-053 bullet 3.
+- Error contract: one new `RestaurantDeactivatedError` mapped to `409 { error }` in `ordersRouter.ts`, reusing the repo's established conflict pattern (`TransitionError`/`RecallError`); login reuses the established 401 auth-failure pattern. No new HTTP status/API contract introduced.
+
+**Step 2 — Focused guard tests** ✅: 7 added (auth 1, orders 4, processor 2).
+
+**Step 3 — Playbook verification tests (FR-053)** ✅
+
+- **Deactivated WHILE genuinely PROCESSING:** the test drives a real claim → `PROCESSING` → in-flight send; while the attempt is genuinely `PROCESSING` (confirmed by a row read inside the send hook) the restaurant is deactivated by the in-flight sender; the SAME attempt then completes normally → `SENT` with its `providerMessageId` recorded; the restaurant is left `DEACTIVATED`; exactly 1 attempt row — the in-flight attempt was neither cancelled/suppressed nor duplicated. ✅
+- **Recovery respects deactivation:** a stuck attempt (`PROCESSING`, stale `claimedAt`) is recovered to `PENDING` via `recoverStuckJobs()` while its restaurant is `DEACTIVATED`; the subsequent `claimAndProcessOne()` does NOT claim it (stays `PENDING`, `claimedAt` null); exactly 1 attempt row — no re-send, no duplicate, no new attempt. ✅
+- Existing required scenarios preserved/verified: DEACTIVATED login/create/READY/RECALL blocked; PENDING-attempt-never-claimed (Phase 9 test); no automatic retry created after deactivation; COLLECTED/CANCELLED allowed where SRS permits.
+
+**Results:** full backend suite **213/213** (13 files); typecheck passes; build passes; `git diff --check` clean; **no Prisma schema/migration file changed**; nothing staged. Processor suite green both in isolation (40/40) and within the full run (no cross-file DB-concurrency flake this time).
+**External limitation / uncertainty:** no live/production validation performed (no deployment exists); deactivation is pure application/DB logic and is fully covered by local integration tests. No deactivation/activation endpoint exists — SRS and Playbook define none (Phase 16 implements enforcement only; tests set `status` directly via Prisma).
+**Status per Playbook:** implementation and verification complete; the Playbook's ending step is "**Verify and commit**" — commit remains a human decision. Next Playbook phase: **Phase 17 — Frontend: Core Application**.
 
 ---
 
@@ -330,7 +355,7 @@ FR-045 requirements interpreted: (a) V1 uses exactly **one** QuickQueue-authored
 | Phase 13 — Webhook Receiver | ✅ Complete & verified | 22 tests pass; real signature/sent + real delivered/read events confirmed (attempts 72836a8a/626dca3b → READ); latest disposable attempt stayed SENT |
 | Phase 14 — STOP / Opt-Out | ✅ Complete | 15 new webhook tests + existing 22 intact (138/138); real captured STOP replay → opt-out created + READY suppressed; FR-048/049/028 validated live; live Meta delivery blocked (expired token/rotated ngrok URL) |
 | Phase 15 — Embedded Signup | 🚧 In progress | Steps 1–5 done + closure review verified: NFR-004 AES-256-GCM crypto foundation, /connections/signup initiate & complete endpoints, per-restaurant WhatsApp sender (per-connection decrypted credentials, no cross-tenant fallback, global env token/phone no longer used), display-name registration orchestration (exact `<Restaurant> via QuickQueue` name, plain-name fallback on rejection, records only Meta-confirmed approvals), FR-045 template-provisioning orchestration + template identifier recorded on every attempt (204/204 suite, typecheck/build/diff-check clean, no schema change). **Uncommitted** — commit is a human decision (Playbook "Verify and commit"). Live validation remains externally blocked (Meta token expired 2026-09-22; Tech Provider approval outstanding; no 2nd restaurant) — Embedded Signup / template provisioning / display-name outcomes unvalidated (SRS §22). Next: commit, then Phase 16 — Restaurant Deactivation |
-| Phase 16 — Restaurant Deactivation | ⬜ Not started | |
+| Phase 16 — Restaurant Deactivation | 🚧 In progress | FR-052/FR-053 implemented + Playbook-verified (213/213, typecheck/build/diff-check clean, no schema change): login/create/READY/RECALL blocked for DEACTIVATED (established 401/409 patterns), no automatic retry created after deactivation, genuine PROCESSING attempt finishes to SENT even if deactivated mid-send, recovered stuck attempt never re-claimed after deactivation; COLLECTED/CANCELLED remain allowed. **Uncommitted** — human to "Verify and commit" (Playbook). Next: Phase 17 — Frontend: Core Application |
 | Phase 17 — Frontend Core | ⬜ Not started | |
 | Phase 18 — Frontend Visual Review | ⬜ Not started | |
 | Phase 19 — Documentation | ⬜ Not started | |

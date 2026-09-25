@@ -752,4 +752,125 @@ describe('Orders', () => {
       expect(attempts).toHaveLength(1)
     })
   })
+
+  describe('Deactivated restaurant guards (FR-052)', () => {
+    const deactivated = {
+      email: `orders-deactivated-${Date.now()}@example.com`,
+      password: 'password123',
+      name: 'Deactivated Restaurant',
+    }
+
+    let restaurantId: string
+    let cookie: string
+
+    beforeAll(async () => {
+      const signup = await request(app)
+        .post('/auth/signup')
+        .set('Origin', ORIGIN)
+        .send(deactivated)
+      restaurantId = signup.body.id
+
+      const login = await request(app)
+        .post('/auth/login')
+        .set('Origin', ORIGIN)
+        .send({ email: deactivated.email, password: deactivated.password })
+      cookie = extractCookies(login)
+
+      await prisma.restaurant.update({
+        where: { id: restaurantId },
+        data: { status: 'DEACTIVATED' },
+      })
+    })
+
+    afterAll(async () => {
+      await prisma.order.deleteMany({ where: { restaurantId } })
+      await prisma.restaurant.deleteMany({ where: { email: deactivated.email } })
+    })
+
+    it('should reject order creation for a deactivated restaurant', async () => {
+      const res = await request(app)
+        .post('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookie)
+        .send({
+          displayToken: 'deact-1',
+          customerPhone: '+14155559991',
+          consentGiven: true,
+        })
+
+      expect(res.status).toBe(409)
+      expect(res.body.error).toContain('deactivated')
+
+      const count = await prisma.order.count({ where: { restaurantId } })
+      expect(count).toBe(0)
+    })
+
+    it('should reject a READY transition for a deactivated restaurant and create no attempt', async () => {
+      const order = await prisma.order.create({
+        data: {
+          restaurantId,
+          displayToken: 'deact-ready',
+          customerPhone: '+14155559992',
+          consentGiven: true,
+          consentMethod: 'VERBAL_STAFF_CONFIRMED',
+          status: 'PREPARING',
+        },
+      })
+
+      const res = await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookie)
+
+      expect(res.status).toBe(409)
+      expect(res.body.error).toContain('deactivated')
+
+      const finalOrder = await prisma.order.findUnique({ where: { id: order.id } })
+      expect(finalOrder!.status).toBe('PREPARING')
+      expect(finalOrder!.readyAt).toBeNull()
+
+      const attempts = await prisma.notificationAttempt.count({ where: { orderId: order.id } })
+      expect(attempts).toBe(0)
+    })
+
+    it('should still allow COLLECTED for a deactivated restaurant', async () => {
+      const order = await prisma.order.create({
+        data: {
+          restaurantId,
+          displayToken: 'deact-collect',
+          customerPhone: '+14155559993',
+          consentGiven: false,
+          status: 'READY',
+        },
+      })
+
+      const res = await request(app)
+        .post(`/orders/${order.id}/collected`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookie)
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('COLLECTED')
+    })
+
+    it('should still allow CANCELLED for a deactivated restaurant', async () => {
+      const order = await prisma.order.create({
+        data: {
+          restaurantId,
+          displayToken: 'deact-cancel',
+          customerPhone: '+14155559994',
+          consentGiven: false,
+          status: 'PREPARING',
+        },
+      })
+
+      const res = await request(app)
+        .post(`/orders/${order.id}/cancel`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookie)
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('CANCELLED')
+    })
+  })
 })

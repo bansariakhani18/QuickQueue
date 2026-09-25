@@ -144,6 +144,11 @@ authRouter.post('/login', (req: Request, res: Response) => {
           return null
         }
 
+        if (restaurant.status === 'DEACTIVATED') {
+          res.status(401).json({ error: 'Account is deactivated' })
+          return null
+        }
+
         req.session = {
           restaurantId: restaurant.id,
           sessionVersion: restaurant.sessionVersion,

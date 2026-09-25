@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAuth, type SessionData } from './auth.js'
-import { createOrder, listActiveOrders, transitionOrderStatus, PhoneNormalizationError, ValidationError, OrderNotFoundError, TransitionError } from './orders.js'
+import { createOrder, listActiveOrders, transitionOrderStatus, PhoneNormalizationError, ValidationError, OrderNotFoundError, TransitionError, RestaurantDeactivatedError } from './orders.js'
 import type { TransitionStatus } from './orders.js'
 import { recallOrder, RecallError } from './processor.js'
 import type { Request, Response } from 'express'
@@ -54,6 +54,10 @@ ordersRouter.post('/', (req: Request, res: Response) => {
       }
       if (err instanceof ValidationError) {
         res.status(400).json({ error: err.message })
+        return
+      }
+      if (err instanceof RestaurantDeactivatedError) {
+        res.status(409).json({ error: err.message })
         return
       }
       console.error('Create order error:', err)
@@ -118,6 +122,10 @@ function handleTransition(
         res.status(409).json({ error: err.message })
         return
       }
+      if (err instanceof RestaurantDeactivatedError) {
+        res.status(409).json({ error: err.message })
+        return
+      }
       console.error('Transition error:', err)
       res.status(500).json({ error: 'Internal server error' })
     })
@@ -149,6 +157,10 @@ ordersRouter.post('/:id/recall', (req: Request, res: Response) => {
     })
     .catch((err) => {
       if (err instanceof RecallError) {
+        res.status(409).json({ error: err.message })
+        return
+      }
+      if (err instanceof RestaurantDeactivatedError) {
         res.status(409).json({ error: err.message })
         return
       }

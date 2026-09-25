@@ -120,6 +120,30 @@ describe('Auth', () => {
       expect(res.status).toBe(400)
       expect(res.body.error).toBeDefined()
     })
+
+    it('should reject login for a deactivated restaurant without setting a session', async () => {
+      const deactivatedEmail = `deactivated-${Date.now()}@example.com`
+      const signup = await request(app)
+        .post('/auth/signup')
+        .set('Origin', ORIGIN)
+        .send({ name: 'Deactivated Restaurant', email: deactivatedEmail, password: testPassword })
+
+      await prisma.restaurant.update({
+        where: { id: signup.body.id },
+        data: { status: 'DEACTIVATED' },
+      })
+
+      const res = await request(app)
+        .post('/auth/login')
+        .set('Origin', ORIGIN)
+        .send({ email: deactivatedEmail, password: testPassword })
+
+      expect(res.status).toBe(401)
+      expect(res.body.error).toContain('deactivated')
+      expect(res.headers['set-cookie']).toBeUndefined()
+
+      await prisma.restaurant.delete({ where: { email: deactivatedEmail } })
+    })
   })
 
   describe('POST /auth/logout', () => {

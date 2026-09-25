@@ -618,6 +618,140 @@ describe('Phase 10 — Retry Classification and RECALL', () => {
     })
   })
 
+  describe('Deactivated restaurant guards (FR-052/FR-053)', () => {
+    afterEach(() => {
+      setNotificationSender(createMockSender())
+    })
+
+    it('should reject RECALL for a deactivated restaurant and create no new attempt', async () => {
+      const restaurant = await createRestaurant(`recall-deact-${Date.now()}@ex.com`, 'DEACTIVATED')
+      const order = await createOrder(restaurant.id, '+14155558400')
+      await createAttempt(order.id)
+
+      const countBefore = await prisma.notificationAttempt.count({ where: { orderId: order.id } })
+      expect(countBefore).toBe(1)
+
+      await expect(recallOrder(restaurant.id, order.id)).rejects.toThrow('Restaurant is deactivated')
+
+      const countAfter = await prisma.notificationAttempt.count({ where: { orderId: order.id } })
+      expect(countAfter).toBe(1)
+
+      await prisma.order.delete({ where: { id: order.id } })
+      await prisma.restaurant.delete({ where: { id: restaurant.id } })
+    })
+
+    it('should not schedule an automatic retry if the restaurant is deactivated before the retry evaluation, finalizing as FAILED', async () => {
+      const restaurant = await createRestaurant(`retry-deact-${Date.now()}@ex.com`)
+      const order = await createOrder(restaurant.id, '+14155558401')
+      const attempt = await createAttempt(order.id)
+
+      setNotificationSender({
+        async send(payload) {
+          await prisma.restaurant.update({
+            where: { id: payload.restaurantId },
+            data: { status: 'DEACTIVATED' },
+          })
+          throw new Error('Mock transient failure')
+        },
+      })
+
+      const claimed = await claimAndProcessOne()
+      expect(claimed).toBe(true)
+
+      const final = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+      expect(final!.jobStatus).toBe('FAILED')
+      expect(final!.retryCount).toBe(0)
+      expect(final!.failedAt).not.toBeNull()
+      expect(final!.nextRetryAt).toBeNull()
+      expect(final!.errorCode).toBe('MOCK_TRANSIENT')
+
+      const attemptCount = await prisma.notificationAttempt.count({ where: { orderId: order.id } })
+      expect(attemptCount).toBe(1)
+
+      await prisma.order.delete({ where: { id: order.id } })
+      await prisma.restaurant.delete({ where: { id: restaurant.id } })
+    })
+
+    it('should allow a genuinely PROCESSING attempt to finish and record SENT even if the restaurant is deactivated mid-send', async () => {
+      const restaurant = await createRestaurant(`proc-deact-${Date.now()}@ex.com`)
+      const order = await createOrder(restaurant.id, '+14155558410')
+      const attempt = await createAttempt(order.id)
+
+      let statusWhileInFlight: string | null = null
+      setNotificationSender({
+        async send(payload) {
+          const during = await prisma.notificationAttempt.findUnique({
+            where: { id: attempt.id },
+            select: { jobStatus: true },
+          })
+          statusWhileInFlight = during?.jobStatus ?? null
+          await prisma.restaurant.update({
+            where: { id: payload.restaurantId },
+            data: { status: 'DEACTIVATED' },
+          })
+          return { providerMessageId: `wamid-inflight-${attempt.id}` }
+        },
+      })
+
+      const claimed = await claimAndProcessOne()
+      expect(claimed).toBe(true)
+
+      expect(statusWhileInFlight).toBe('PROCESSING')
+
+      const final = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+      expect(final!.jobStatus).toBe('SENT')
+      expect(final!.sentAt).not.toBeNull()
+      expect(final!.providerMessageId).toBe(`wamid-inflight-${attempt.id}`)
+
+      const restaurantAfter = await prisma.restaurant.findUnique({
+        where: { id: restaurant.id },
+        select: { status: true },
+      })
+      expect(restaurantAfter!.status).toBe('DEACTIVATED')
+
+      const attemptCount = await prisma.notificationAttempt.count({ where: { orderId: order.id } })
+      expect(attemptCount).toBe(1)
+
+      await prisma.order.delete({ where: { id: order.id } })
+      await prisma.restaurant.delete({ where: { id: restaurant.id } })
+    })
+
+    it('should recover a stuck PROCESSING attempt but never re-claim it once the restaurant is deactivated', async () => {
+      const restaurant = await createRestaurant(`recover-deact-${Date.now()}@ex.com`)
+      const order = await createOrder(restaurant.id, '+14155558420')
+      const attempt = await createAttempt(order.id)
+
+      await prisma.notificationAttempt.update({
+        where: { id: attempt.id },
+        data: { jobStatus: 'PROCESSING', claimedAt: new Date(Date.now() - 3 * 60 * 1000) },
+      })
+
+      await prisma.restaurant.update({
+        where: { id: restaurant.id },
+        data: { status: 'DEACTIVATED' },
+      })
+
+      const recovered = await recoverStuckJobs(2 * 60 * 1000)
+      expect(recovered).toBe(1)
+
+      const afterRecovery = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+      expect(afterRecovery!.jobStatus).toBe('PENDING')
+
+      const claimed = await claimAndProcessOne()
+      expect(claimed).toBe(false)
+
+      const final = await prisma.notificationAttempt.findUnique({ where: { id: attempt.id } })
+      expect(final!.jobStatus).toBe('PENDING')
+      expect(final!.claimedAt).toBeNull()
+
+      const attemptCount = await prisma.notificationAttempt.count({ where: { orderId: order.id } })
+      expect(attemptCount).toBe(1)
+
+      await prisma.order.delete({ where: { id: order.id } })
+      await prisma.restaurant.delete({ where: { id: restaurant.id } })
+    })
+  })
+
   describe('Concurrent RECALL (FR-037)', () => {
     it('should prevent duplicate attemptNumbers under concurrent RECALL', async () => {
       const restaurant = await createRestaurant(`recall-conc-${Date.now()}@ex.com`)

@@ -10,6 +10,7 @@ import {
 } from './whatsappClient.js'
 import { decryptToken } from './crypto.js'
 import type { EncryptedToken } from './crypto.js'
+import { RestaurantDeactivatedError } from './orders.js'
 
 const prisma = new PrismaClient()
 
@@ -333,7 +334,18 @@ async function processAttempt(attemptId: string): Promise<void> {
   } catch (err) {
     const failure = classifySendError(err)
 
-    if (failure.kind === 'transient' && attempt.retryCount < MAX_RETRIES) {
+    let retryEligible = failure.kind === 'transient' && attempt.retryCount < MAX_RETRIES
+    if (retryEligible) {
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { id: attempt.order.restaurantId },
+        select: { status: true },
+      })
+      if (restaurant?.status === 'DEACTIVATED') {
+        retryEligible = false
+      }
+    }
+
+    if (retryEligible) {
       const nextRetryAt = new Date(Date.now() + getRetryBackoffMs())
       await prisma.notificationAttempt.update({
         where: { id: attemptId },
@@ -416,6 +428,14 @@ export async function recallOrder(
   orderId: string,
 ): Promise<{ attemptNumber: number }> {
   return prisma.$transaction(async (tx) => {
+    const restaurant = await tx.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { status: true },
+    })
+    if (restaurant?.status === 'DEACTIVATED') {
+      throw new RestaurantDeactivatedError('Restaurant is deactivated')
+    }
+
     const rows = await tx.$queryRaw<
       { id: string; status: string }[]
     >`SELECT id, status FROM orders WHERE id = ${orderId} AND restaurant_id = ${restaurantId} FOR UPDATE`

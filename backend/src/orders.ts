@@ -47,6 +47,14 @@ export async function createOrder(
   restaurantId: string,
   input: CreateOrderInput,
 ): Promise<OrderRecord> {
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { status: true },
+  })
+  if (restaurant?.status === 'DEACTIVATED') {
+    throw new RestaurantDeactivatedError('Restaurant is deactivated')
+  }
+
   const displayToken = input.displayToken.trim()
   if (!displayToken) {
     throw new ValidationError('Display token is required')
@@ -124,6 +132,16 @@ export async function transitionOrderStatus(
   options?: { onBeforeAttemptInsert?: () => void | never },
 ): Promise<OrderRecord> {
   return prisma.$transaction(async (tx) => {
+    if (targetStatus === 'READY') {
+      const restaurant = await tx.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { status: true },
+      })
+      if (restaurant?.status === 'DEACTIVATED') {
+        throw new RestaurantDeactivatedError('Restaurant is deactivated')
+      }
+    }
+
     const rows = await tx.$queryRaw<
       { id: string; status: string }[]
     >`SELECT id, status FROM orders WHERE id = ${orderId} AND restaurant_id = ${restaurantId} FOR UPDATE`
@@ -218,5 +236,12 @@ export class ValidationError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'ValidationError'
+  }
+}
+
+export class RestaurantDeactivatedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RestaurantDeactivatedError'
   }
 }
