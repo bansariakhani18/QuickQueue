@@ -36,7 +36,11 @@ TypeScript strict mode is enabled. Run `npm run typecheck` from the backend or r
 
 ## Frontend
 
-The frontend is a React + TypeScript + Vite application with a minimal scaffold. No product UI has been implemented yet.
+The frontend is a React + TypeScript + Vite application implementing the restaurant core UI (Phase 17): login/logout, password reset, order creation (display token, customer phone, WhatsApp-consent checkbox), and a polling active-orders board with ready/collected/cancel/resend actions, FR-039 notification status labels, and opt-out / no-consent / failed flags. Data layer is `@tanstack/react-query` with a typed API client in `frontend/src/api.ts`.
+
+The frontend runs on `http://localhost:5173` and talks to the backend through the Vite dev proxy: any request to `/api/*` is forwarded to `http://localhost:3000` with the `/api` prefix stripped. The backend's origin guard (`ALLOWED_ORIGINS`, default `http://localhost:5173`) and the session cookie both work through this same-origin proxy, so no CORS changes are needed. The API client always sends `credentials: 'include'` and expects `{error}` JSON bodies from the backend.
+
+Active orders refresh every 5 seconds (see `POLL_INTERVAL_MS` in `frontend/src/hooks/useOrders.ts`).
 
 ## Environment Configuration
 

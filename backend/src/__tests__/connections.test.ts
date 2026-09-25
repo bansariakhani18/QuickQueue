@@ -335,4 +335,101 @@ describe('WhatsApp connections (Phase 15 step 2)', () => {
       expect(decryptToken(row!.accessTokenEncrypted as EncryptedToken)).toBe(C_TOKEN)
     })
   })
+
+  describe('GET /connections/status', () => {
+    const restaurantD = {
+      email: `conn-d-${Date.now()}@example.com`,
+      password: 'password000',
+      name: 'Restaurant D',
+    }
+    const D_WABA = '102290129340401'
+    const D_PHONE = '15550004444'
+    const D_TOKEN = 'EAAXtest-access-token-for-restaurant-d'
+
+    let cookieD: string
+    let restaurantDId: string
+
+    beforeAll(async () => {
+      const signupDRes = await request(app)
+        .post('/auth/signup')
+        .set('Origin', ORIGIN)
+        .send(restaurantD)
+      restaurantDId = signupDRes.body.id
+      const loginDRes = await request(app)
+        .post('/auth/login')
+        .set('Origin', ORIGIN)
+        .send({ email: restaurantD.email, password: restaurantD.password })
+      cookieD = extractCookies(loginDRes)
+    })
+
+    afterAll(async () => {
+      await prisma.whatsAppConnection.deleteMany({
+        where: { restaurantId: restaurantDId },
+      })
+      await prisma.restaurant.deleteMany({
+        where: { email: restaurantD.email },
+      })
+    })
+
+    it('returns 401 when unauthenticated', async () => {
+      const res = await request(app).get('/connections/status')
+      expect(res.status).toBe(401)
+    })
+
+    it('reports NOT_CONNECTED when no connection row exists yet', async () => {
+      const res = await request(app)
+        .get('/connections/status')
+        .set('Cookie', cookieD)
+
+      expect(res.status).toBe(200)
+      expect(res.body).toEqual({ connectionStatus: 'NOT_CONNECTED', connectedAt: null })
+    })
+
+    it('reports PENDING after an initiate call', async () => {
+      await request(app)
+        .post('/connections/signup/initiate')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieD)
+
+      const res = await request(app)
+        .get('/connections/status')
+        .set('Cookie', cookieD)
+
+      expect(res.status).toBe(200)
+      expect(res.body.connectionStatus).toBe('PENDING')
+      expect(res.body.connectedAt).toBeNull()
+    })
+
+    it('reports CONNECTED with connectedAt after completion and never leaks provider tokens or IDs', async () => {
+      const completeRes = await request(app)
+        .post('/connections/signup/complete')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieD)
+        .send({ wabaId: D_WABA, phoneNumberId: D_PHONE, accessToken: D_TOKEN })
+      expect(completeRes.status).toBe(200)
+
+      const res = await request(app)
+        .get('/connections/status')
+        .set('Cookie', cookieD)
+
+      expect(res.status).toBe(200)
+      expect(res.body.connectionStatus).toBe('CONNECTED')
+      expect(new Date(res.body.connectedAt).getTime()).toBeGreaterThan(0)
+      expect(res.body.wabaId).toBeUndefined()
+      expect(res.body.phoneNumberId).toBeUndefined()
+      expect(res.body.accessToken).toBeUndefined()
+      expect(res.body.accessTokenEncrypted).toBeUndefined()
+      expect(JSON.stringify(res.body)).not.toContain(D_TOKEN)
+      expect(JSON.stringify(res.body)).not.toContain(D_WABA)
+    })
+
+    it('scopes status to the authenticated restaurant', async () => {
+      const res = await request(app)
+        .get('/connections/status')
+        .set('Cookie', cookieA)
+
+      expect(res.status).toBe(200)
+      expect(res.body.connectionStatus).toBe('CONNECTED')
+    })
+  })
 })

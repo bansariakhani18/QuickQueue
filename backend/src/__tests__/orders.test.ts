@@ -753,6 +753,166 @@ describe('Orders', () => {
     })
   })
 
+  describe('GET /orders notification exposure (FR-039/FR-037)', () => {
+    async function createOrderAs(
+      cookie: string,
+      token: string,
+      phone: string,
+    ) {
+      const res = await request(app)
+        .post('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookie)
+        .send({
+          displayToken: token,
+          customerPhone: phone,
+          consentGiven: true,
+        })
+      expect(res.status).toBe(201)
+      return res.body
+    }
+
+    it('returns null notificationStatus and attemptNumber when the order has no attempt', async () => {
+      const order = await createOrderAs(cookieA, 'nfyst-null', '+14155558001')
+
+      const res = await request(app)
+        .get('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      expect(res.status).toBe(200)
+      const listed = res.body.orders.find((o: { id: string }) => o.id === order.id)
+      expect(listed).toBeDefined()
+      expect(listed.notificationStatus).toBeNull()
+      expect(listed.attemptNumber).toBeNull()
+    })
+
+    it('exposes the most recent attempt status and attempt number after READY', async () => {
+      const order = await createOrderAs(cookieA, 'nfyst-ready', '+14155558002')
+
+      await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      const res = await request(app)
+        .get('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      const listed = res.body.orders.find((o: { id: string }) => o.id === order.id)
+      expect(listed).toBeDefined()
+      expect(listed.notificationStatus).toBe('PENDING')
+      expect(listed.attemptNumber).toBe(1)
+    })
+
+    it('reflects a later jobStatus reported by the processor/webhook', async () => {
+      const order = await createOrderAs(cookieA, 'nfyst-sent', '+14155558003')
+
+      await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      const attempt = await prisma.notificationAttempt.findFirst({ where: { orderId: order.id } })
+      expect(attempt).not.toBeNull()
+      await prisma.notificationAttempt.update({
+        where: { id: attempt!.id },
+        data: { jobStatus: 'SENT', sentAt: new Date() },
+      })
+
+      const res = await request(app)
+        .get('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      const listed = res.body.orders.find((o: { id: string }) => o.id === order.id)
+      expect(listed.notificationStatus).toBe('SENT')
+      expect(listed.attemptNumber).toBe(1)
+    })
+
+    it('shows the newest attempt (attempt 2) after RECALL, not the older one', async () => {
+      const order = await createOrderAs(cookieA, 'nfyst-recall', '+14155558004')
+
+      await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      const firstAttempt = await prisma.notificationAttempt.findFirst({ where: { orderId: order.id } })
+      await prisma.notificationAttempt.update({
+        where: { id: firstAttempt!.id },
+        data: { jobStatus: 'SENT', sentAt: new Date() },
+      })
+
+      const recallRes = await request(app)
+        .post(`/orders/${order.id}/recall`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      expect(recallRes.status).toBe(200)
+      expect(recallRes.body.attemptNumber).toBe(2)
+
+      const res = await request(app)
+        .get('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      const listed = res.body.orders.find((o: { id: string }) => o.id === order.id)
+      expect(listed.notificationStatus).toBe('PENDING')
+      expect(listed.attemptNumber).toBe(2)
+    })
+
+    it('flags opt-out-active orders (FR-019)', async () => {
+      const phone = '+14155558006'
+      const order = await createOrderAs(cookieA, 'nfyst-optout', phone)
+
+      await prisma.notificationOptOut.create({
+        data: { restaurantId: restaurantAId, phoneNormalized: phone },
+      })
+
+      try {
+        const res = await request(app)
+          .get('/orders')
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        const listed = res.body.orders.find((o: { id: string }) => o.id === order.id)
+        expect(listed.optOutActive).toBe(true)
+      } finally {
+        await prisma.notificationOptOut.deleteMany({
+          where: { restaurantId: restaurantAId, phoneNormalized: phone },
+        })
+      }
+    })
+
+    it('does not expose provider message ids or other attempt internals', async () => {
+      const order = await createOrderAs(cookieA, 'nfyst-safe', '+14155558005')
+
+      await request(app)
+        .post(`/orders/${order.id}/ready`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      const attempt = await prisma.notificationAttempt.findFirst({ where: { orderId: order.id } })
+      await prisma.notificationAttempt.update({
+        where: { id: attempt!.id },
+        data: { jobStatus: 'SENT', sentAt: new Date(), providerMessageId: 'wamid-secret-test' },
+      })
+
+      const res = await request(app)
+        .get('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+
+      const listed = res.body.orders.find((o: { id: string }) => o.id === order.id)
+      const keys = Object.keys(listed)
+      for (const forbidden of ['providerMessageId', 'errorCode', 'errorMessage', 'accessToken']) {
+        expect(keys).not.toContain(forbidden)
+      }
+    })
+  })
+
   describe('Deactivated restaurant guards (FR-052)', () => {
     const deactivated = {
       email: `orders-deactivated-${Date.now()}@example.com`,

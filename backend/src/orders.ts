@@ -86,10 +86,20 @@ export interface ListOrdersOptions {
   search?: string
 }
 
+export interface NotificationAttemptSummary {
+  attemptNumber: number
+  jobStatus: string
+}
+
+export interface ActiveOrderRecord extends OrderRecord {
+  mostRecentAttempt: NotificationAttemptSummary | null
+  optOutActive: boolean
+}
+
 export async function listActiveOrders(
   restaurantId: string,
   options?: ListOrdersOptions,
-): Promise<OrderRecord[]> {
+): Promise<ActiveOrderRecord[]> {
   const where: Prisma.OrderWhereInput = {
     restaurantId,
     status: { in: ['PREPARING', 'READY'] },
@@ -109,13 +119,56 @@ export async function listActiveOrders(
       { status: 'asc' },
       { createdAt: 'asc' },
     ],
+    include: {
+      notificationAttempts: {
+        orderBy: { attemptNumber: 'desc' },
+        take: 1,
+      },
+    },
   })
 
-  return orders.sort((a, b) => {
-    if (a.status === 'READY' && b.status !== 'READY') return -1
-    if (a.status !== 'READY' && b.status === 'READY') return 1
-    return a.createdAt.getTime() - b.createdAt.getTime()
-  })
+  const optOutPhones = orders
+    .map((o) => o.customerPhone)
+    .filter((p): p is string => typeof p === 'string' && p.length > 0)
+
+  let optedOutPhones = new Set<string>()
+  if (optOutPhones.length > 0) {
+    const optOuts = await prisma.notificationOptOut.findMany({
+      where: { restaurantId, phoneNormalized: { in: optOutPhones } },
+      select: { phoneNormalized: true },
+    })
+    optedOutPhones = new Set(optOuts.map((o) => o.phoneNormalized))
+  }
+
+  return orders
+    .sort((a, b) => {
+      if (a.status === 'READY' && b.status !== 'READY') return -1
+      if (a.status !== 'READY' && b.status === 'READY') return 1
+      return a.createdAt.getTime() - b.createdAt.getTime()
+    })
+    .map((o) => {
+      const attempt = o.notificationAttempts[0] ?? null
+      return {
+        id: o.id,
+        restaurantId: o.restaurantId,
+        displayToken: o.displayToken,
+        customerPhone: o.customerPhone,
+        consentGiven: o.consentGiven,
+        consentCapturedAt: o.consentCapturedAt,
+        consentMethod: o.consentMethod,
+        status: o.status,
+        readyAt: o.readyAt,
+        collectedAt: o.collectedAt,
+        cancelledAt: o.cancelledAt,
+        terminalAt: o.terminalAt,
+        createdAt: o.createdAt,
+        updatedAt: o.updatedAt,
+        mostRecentAttempt: attempt
+          ? { attemptNumber: attempt.attemptNumber, jobStatus: attempt.jobStatus }
+          : null,
+        optOutActive: o.customerPhone !== null && optedOutPhones.has(o.customerPhone),
+      }
+    })
 }
 
 export type TransitionStatus = 'READY' | 'COLLECTED' | 'CANCELLED'

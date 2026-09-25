@@ -3,6 +3,7 @@ import { requireAuth, type SessionData } from './auth.js'
 import {
   completeEmbeddedSignup,
   ConnectionEncryptionError,
+  getConnectionStatus,
   initiateEmbeddedSignup,
 } from './connections.js'
 import type { Request, Response } from 'express'
@@ -10,6 +11,20 @@ import type { Request, Response } from 'express'
 export const connectionsRouter = Router()
 
 connectionsRouter.use(requireAuth)
+
+connectionsRouter.get('/status', (_req: Request, res: Response) => {
+  const session = _req.session as SessionData
+  const restaurantId = session.restaurantId
+
+  getConnectionStatus(restaurantId)
+    .then((status) => {
+      res.status(200).json(status)
+    })
+    .catch((err) => {
+      console.error('Connection status error:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    })
+})
 
 connectionsRouter.post('/signup/initiate', (req: Request, res: Response) => {
   const session = req.session as SessionData

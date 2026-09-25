@@ -26,6 +26,30 @@ export interface EmbeddedSignupCompletionInput {
   accessToken: string
 }
 
+export type ConnectionStatusValue =
+  | 'NOT_CONNECTED'
+  | 'PENDING'
+  | 'CONNECTED'
+  | 'DISCONNECTED'
+  | 'ERROR'
+
+export async function getConnectionStatus(restaurantId: string): Promise<{
+  connectionStatus: ConnectionStatusValue
+  connectedAt: Date | null
+}> {
+  const connection = await prisma.whatsAppConnection.findUnique({
+    where: { restaurantId },
+    select: { connectionStatus: true, connectedAt: true },
+  })
+  if (!connection) {
+    return { connectionStatus: 'NOT_CONNECTED', connectedAt: null }
+  }
+  return {
+    connectionStatus: connection.connectionStatus as ConnectionStatusValue,
+    connectedAt: connection.connectedAt,
+  }
+}
+
 export async function initiateEmbeddedSignup(restaurantId: string) {
   const existing = await prisma.whatsAppConnection.findUnique({ where: { restaurantId } })
   if (existing?.connectionStatus === 'CONNECTED') {

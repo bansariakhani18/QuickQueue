@@ -83,6 +83,9 @@ ordersRouter.get('/', (req: Request, res: Response) => {
           consentGiven: o.consentGiven,
           status: o.status,
           createdAt: o.createdAt,
+          notificationStatus: o.mostRecentAttempt?.jobStatus ?? null,
+          attemptNumber: o.mostRecentAttempt?.attemptNumber ?? null,
+          optOutActive: o.optOutActive,
         })),
       })
     })
