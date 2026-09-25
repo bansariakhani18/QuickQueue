@@ -1,75 +1,117 @@
-# QuickQueue — Local Development Setup
+# QuickQueue — Local Development & Setup Guide
 
-QuickQueue uses an npm-workspaces repository with independent frontend and backend applications. The repository intentionally has no shared package yet; one should be introduced only when later phases create a genuine shared contract.
+QuickQueue uses an npm-workspaces monorepo containing independent frontend and backend applications, backed by PostgreSQL 16.
 
-## Services
+---
 
-| Service | Local address | Command |
-| --- | --- | --- |
-| Frontend | `http://localhost:5173` | `npm run dev:frontend` |
-| Backend | `http://localhost:3000` | `npm run dev:backend` |
-| PostgreSQL 16 | `localhost:5433` | `docker compose up -d postgres` |
+## 1. Prerequisites
 
-## PostgreSQL
+* **Node.js:** v22 or newer (Node 24 supported)
+* **npm:** v10 or newer
+* **Docker Desktop:** Required for running the local PostgreSQL container
+* **Git:** Required for version control
 
-A native Windows PostgreSQL installation already occupies host port `5432`. QuickQueue's Docker PostgreSQL is therefore mapped to host port `5433` → container port `5432`. This mapping must be consistent across `docker-compose.yml`, `.env.example`, and `backend/.env`.
+---
 
-PostgreSQL 16 is intentionally pinned in `docker-compose.yml`. The SRS requires identical database major versions locally and in production; production must therefore be provisioned on PostgreSQL 16 unless the frozen SRS is amended.
+## 2. Services Overview
 
-The Docker volume `quickqueue_postgres-data` persists database data across container restarts.
+| Service | Local Address | Command | Description |
+|---|---|---|---|
+| **Frontend** | `http://localhost:5173` | `npm run dev:frontend` | React 19 + TypeScript + Vite SPA |
+| **Backend** | `http://localhost:3000` | `npm run dev:backend` | Node.js + Express + Prisma API & Processor |
+| **PostgreSQL 16** | `localhost:5433` | `docker compose up -d postgres` | PostgreSQL 16 Alpine Docker container |
 
-## Prisma
+---
 
-Prisma 6.19.3 is installed and configured. The schema (`backend/prisma/schema.prisma`) matches the frozen SRS §14.2 exactly. The initial migration (`20260908114604_initial_schema`) has been applied to the local database, including the hand-written partial unique index `one_active_attempt_per_order`.
+## 3. PostgreSQL & Port Configuration
 
-Useful commands (run from `backend/`):
-- `npx prisma generate` — regenerate the Prisma client
-- `npx prisma migrate status` — check migration status
-- `npx prisma db push` — push schema changes (dev only)
-- `npx prisma studio` — open the browser-based data browser
+### Why Host Port 5433 is Used
+A native Windows PostgreSQL installation often occupies host port `5432`. To avoid port collision without interfering with existing developer services, QuickQueue maps its Docker container port `5432` to host port **`5433`**.
+* This mapping is consistently configured in `docker-compose.yml`, `.env.example`, and `backend/.env`.
+* **Important:** Do NOT change this port back to `5432` without checking for a native conflict first.
 
-## Backend
+### Container & Persistence
+* **Image:** `postgres:16-alpine`
+* **Container Name:** `quickqueue-postgres`
+* **Volume:** `quickqueue_postgres-data` (persists database state across container reboots)
 
-The backend is a Node.js + TypeScript + Express application. It currently exposes only `GET /health` returning `200 {"status":"ok"}`. The health check does not yet verify database connectivity (NFR-015) — that will be added when the backend gains database-dependent logic.
+---
 
-TypeScript strict mode is enabled. Run `npm run typecheck` from the backend or root to verify.
-
-## Frontend
-
-The frontend is a React + TypeScript + Vite application implementing the restaurant core UI (Phase 17): login/logout, password reset, order creation (display token, customer phone, WhatsApp-consent checkbox), and a polling active-orders board with ready/collected/cancel/resend actions, FR-039 notification status labels, and opt-out / no-consent / failed flags. Data layer is `@tanstack/react-query` with a typed API client in `frontend/src/api.ts`.
-
-The frontend runs on `http://localhost:5173` and talks to the backend through the Vite dev proxy: any request to `/api/*` is forwarded to `http://localhost:3000` with the `/api` prefix stripped. The backend's origin guard (`ALLOWED_ORIGINS`, default `http://localhost:5173`) and the session cookie both work through this same-origin proxy, so no CORS changes are needed. The API client always sends `credentials: 'include'` and expects `{error}` JSON bodies from the backend.
-
-Active orders refresh every 5 seconds (see `POLL_INTERVAL_MS` in `frontend/src/hooks/useOrders.ts`).
-
-## Environment Configuration
-
-`.env.example` contains local development values for Docker Compose and reserved future application settings. Copy it to `.env` for Docker Compose overrides. Never commit `.env` or real credentials.
-
-The backend's `backend/.env` contains only `DATABASE_URL` pointing at the local Docker PostgreSQL on port 5433.
-
-## Quick Start
+## 4. Fresh Clone Setup (Step-by-Step)
 
 ```powershell
-# Start PostgreSQL
-docker compose up -d postgres
-
-# Install dependencies (from repo root)
+# 1. Clone repository and install dependencies
+git clone <repo-url>
+cd QuickQueue
 npm install
 
-# Start backend (from repo root)
+# 2. Configure environment variables
+# Copy root .env.example to .env for Docker Compose:
+Copy-Item .env.example .env
+
+# Create backend/.env with the local database connection:
+# (backend/.env is Git-ignored)
+Set-Content backend/.env "DATABASE_URL=postgresql://quickqueue:quickqueue_dev_only@localhost:5433/quickqueue?schema=public"
+
+# 3. Start local PostgreSQL
+docker compose up -d postgres
+
+# 4. Apply Prisma migrations
+cd backend
+npx prisma migrate deploy
+cd ..
+
+# 5. Start development servers (in separate terminals)
+# Terminal A (Backend):
 npm run dev:backend
 
-# Start frontend (from repo root)
+# Terminal B (Frontend):
 npm run dev:frontend
 ```
 
-## Phase Status
+---
 
-As of the latest state capture:
-- **Phase 0 (Foundation):** Complete — project structure, Docker, workspaces
-- **Phase 1 (Backend Skeleton):** Complete — Express + TypeScript + health check verified
-- **Phase 2 (Database Schema):** Complete — Prisma schema, migration applied, verified
-- **Phases 3–22:** Not started
+## 5. Backend Architecture & Endpoints
 
-See `docs/PROGRESS.md` for detailed phase tracking.
+The backend is an Express 5.2.1 + TypeScript application running on port `3000`:
+* **Health & DB Check:** `GET /health` returns `200 {"status":"ok"}` after confirming database connectivity (NFR-015).
+* **Authentication (`/auth`):** Restaurant signup (`POST /auth/signup`), login (`POST /auth/login`), logout (`POST /auth/logout`), and password reset with token verification.
+* **Order Operations (`/orders`):** Order creation, active order queue with tenant isolation, and status transition endpoints (`/ready`, `/collected`, `/cancel`, `/recall`).
+* **WhatsApp Connections (`/connections`):** Multi-tenant Embedded Signup endpoints (`/signup/initiate`, `/signup/complete`, and read-only `/status`).
+* **Webhooks (`/webhook/whatsapp`):** Meta webhook handshake and HMAC-SHA256 signature-verified event receiver.
+* **Background Worker:** `startProcessor()` runs inside `server.ts` to claim and dispatch pending notification attempts.
+
+---
+
+## 6. Frontend Architecture & Vite Proxy
+
+The frontend is a React 19 + TypeScript single-page application built with Vite:
+* Runs locally at `http://localhost:5173`.
+* Communicates with the backend via the Vite dev proxy: requests to `/api/*` are transparently rewritten to `http://localhost:3000/*`.
+* The proxy preserves `credentials: 'include'` for same-origin session cookie handling, satisfying backend origin validation (`ALLOWED_ORIGINS`).
+* Active orders automatically poll every 5 seconds via `@tanstack/react-query`.
+
+---
+
+## 7. Useful Database & Verification Commands
+
+### Database & Prisma (from `backend/`)
+* `npx prisma migrate status` — Check whether migrations are up to date
+* `npx prisma migrate deploy` — Apply pending migrations
+* `npx prisma studio` — Launch browser-based database viewer at `http://localhost:5555`
+
+### Quality Checks (from repository root)
+* `npm run typecheck` — Run TypeScript compiler check on all workspaces
+* `npm run build` — Build backend and frontend production bundles
+* `npm run test` — Run the full automated test suite (224 tests passing)
+* `git diff --check` — Check for whitespace errors or uncommitted artifacts
+
+---
+
+## 8. Current Project Status
+
+As of Phase 18 completion:
+* **Phases 0–18:** ✅ Complete and committed (HEAD: `1cf7635`).
+* **Test Suite:** 224/224 automated backend tests passing across 13 test files.
+* **Frontend:** Fully implemented with authentication, active queue, WhatsApp connection panel, and dedicated visual/UX review.
+* **Next Steps:** Phase 19 (Documentation) in progress; Phase 20 (Test Suite Audit) pending.

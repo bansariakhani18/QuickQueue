@@ -1,59 +1,74 @@
 # QuickQueue
 
-QuickQueue is a restaurant order-ready notification system (a virtual token/pickup queue) that notifies customers via WhatsApp when their order is ready for collection. The frozen [SRS](https://github.com/bansariakhani18/QuickQueue/blob/main/SRS.md) is the project's single source of truth.
+QuickQueue is a SaaS order-ready notification system (a virtual pickup queue) that notifies customers via WhatsApp when their restaurant or food-court order is ready for collection. The frozen [SRS.md](SRS.md) is the project's single source of truth.
 
-## Repository layout
+---
 
-- `frontend/` — React, TypeScript, and Vite application.
-- `backend/` — Node.js, TypeScript, and Express application.
-- `docs/` — development documentation.
-- `docker-compose.yml` — local PostgreSQL 16 database.
+## Repository Layout
+
+* `frontend/` — React 19, TypeScript, and Vite single-page application.
+* `backend/` — Node.js, Express, TypeScript, and Prisma backend API and background processor.
+* `docs/` — System architecture and developer documentation.
+* `docker-compose.yml` — Local PostgreSQL 16 Alpine database container (mapped to host port `5433`).
+
+---
 
 ## Prerequisites
 
-- Node.js 22 or newer (Node 24 is supported)
-- npm 10 or newer
-- Docker Desktop (for local PostgreSQL)
+* **Node.js:** v22 or newer (Node 24 supported)
+* **npm:** v10 or newer
+* **Docker Desktop:** For running local PostgreSQL 16
 
-## Local development
+---
 
-```
+## Local Development
+
+```powershell
+# Install dependencies
 npm install
+
+# Start local PostgreSQL 16 (runs on host port 5433)
 docker compose up -d postgres
+
+# Start backend server (runs on port 3000)
 npm run dev:backend
+
+# Start frontend application (runs on port 5173 with /api proxy)
 npm run dev:frontend
 ```
 
-The frontend runs at `http://localhost:5173`; the backend runs at `http://localhost:3000` and provides `GET /health`.
+---
 
-Copy `.env.example` to `.env` before starting Docker if you need to change its local database settings. The example values are development-only and must never be used in production.
+## Quality & Test Checks
 
-## Checks
-
-```
-npm run typecheck
-npm run build
-npm run test
-docker compose ps
+```powershell
+npm run typecheck    # TypeScript verification across backend and frontend
+npm run build        # Build production bundles
+npm run test         # Full Vitest test suite (224/224 tests passing)
 ```
 
-Current status: 90/90 backend tests passing, typecheck and build green.
+---
 
-## Current status: backend through Phase 11
+## Current Status: Phase 18 Complete
 
-The backend is implemented and tested through the following:
+QuickQueue is implemented and verified through **Phase 18** (commit: `1cf7635`):
 
-- **Auth** — restaurant signup/login/logout, session-based auth with session-version invalidation, and password reset with hashed, expiring tokens.
-- **Security** — origin/CSRF protection, rate limiting, DB health checks.
-- **Orders** — order creation and active-order listing, with phone-number normalization and consent handling.
-- **State machine** — PREPARING → READY → COLLECTED/CANCELLED lifecycle with locking and idempotency guarantees.
-- **Notifications** — WhatsApp notification-attempt creation on READY, a background processor (`PENDING → PROCESSING → SENT/FAILED`) with row locking and stuck-job recovery, automatic transient retries with backoff, permanent-failure handling, and manual recall (max 3 attempts).
-- **Data retention** — configurable (72h default) phone-number retention cleanup via a scheduled, idempotent scrubber.
+* **Authentication & Security:** Restaurant signup, login, session management with versioned invalidation, rate limiting, and origin protection.
+* **Order Lifecycle Machine:** `PREPARING` → `READY` → `COLLECTED` / `CANCELLED` transitions with PostgreSQL row locking and duplicate-token support.
+* **Notification Engine:** Background processor using PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED`, stuck-job recovery, exponential retry backoff, and manual `RECALL` (up to 4 total attempts).
+* **Multi-Tenant WhatsApp Integration:** Per-restaurant WhatsApp Business Account onboarding via Embedded Signup, AES-256-GCM encrypted token storage, display-name registration orchestration, template provisioning, and HMAC-SHA256 verified webhook processing.
+* **Restaurant Core UI & UX Pass:** High-contrast, mobile-first React interface featuring an active order queue (5s polling), live relative waiting times, duplicate-token badges, and accessible controls.
+* **External Meta Dependency Note:** Live Cloud API dispatches in local development run against verified test doubles and sandbox replays because the previous development access token expired on 2026-09-22 and Meta Tech Provider verification is pending.
 
-PostgreSQL is pinned to major version 16 locally. Provision Render PostgreSQL 16 for production to satisfy SRS environment parity; the SRS itself does not specify a numeric major version.
+---
 
-## Not yet implemented
+## Detailed Documentation
 
-- **Real WhatsApp Cloud API integration** — the notification sender is currently mocked; real Meta Cloud API integration (auth, approved templates, webhook handling, delivery/read status, signature verification) is next, pending Meta developer/app/WABA setup.
-- **Restaurant-facing frontend** — the React/TypeScript/Vite UI (login, order queue, READY/COLLECTED/RECALL actions, notification status visibility) has not been built yet.
-- **Production deployment** — Render/Vercel deployment, production environment configuration, and end-to-end acceptance testing are pending.
+* [Local Development & Setup Guide](docs/development.md)
+* [System Architecture Overview](docs/ARCHITECTURE.md)
+* [Environment Variables Reference](docs/ENVIRONMENT_VARIABLES.md)
+* [Notification Engine Specification](docs/NOTIFICATION_ENGINE.md)
+* [WhatsApp Cloud API Integration](docs/WHATSAPP_INTEGRATION.md)
+* [Known Limitations & Trade-Offs](docs/KNOWN_LIMITATIONS.md)
+* [Troubleshooting Guide](docs/TROUBLESHOOTING.md)
+* [Phase-by-Phase Progress Log](docs/PROGRESS.md)
