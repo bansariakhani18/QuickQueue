@@ -71,7 +71,8 @@ export function WhatsAppConnectionPanel({ onUnauthorized }: WhatsAppConnectionPa
     <section className="connection-panel" aria-label="WhatsApp connection">
       <div className="connection-head">
         <div className="connection-info">
-          <h2 className="connection-title">WhatsApp</h2>
+          <span className="connection-icon" aria-hidden="true">💬</span>
+          <h2 className="connection-title">WhatsApp Integration</h2>
           <span className={`connection-status connection-${status.toLowerCase()}`}>
             {STATUS_LABELS[status]}
           </span>
@@ -80,7 +81,7 @@ export function WhatsAppConnectionPanel({ onUnauthorized }: WhatsAppConnectionPa
         {showConnectButton && (
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-connect"
             disabled={connectMutation.isPending}
             onClick={() => connectMutation.mutate()}
           >
@@ -92,7 +93,15 @@ export function WhatsAppConnectionPanel({ onUnauthorized }: WhatsAppConnectionPa
       {status === 'CONNECTED' && connectedAt !== null && (
         <p className="connection-note">Connected since {formatDate(connectedAt)}.</p>
       )}
-      {status === 'PENDING' && <p className="connection-note">{HONEST_PENDING_NOTE}</p>}
+
+      {status === 'PENDING' && (
+        <details className="connection-details">
+          <summary className="connection-summary-toggle">
+            Waiting for Meta authorization · View dev setup note
+          </summary>
+          <p className="connection-note">{HONEST_PENDING_NOTE}</p>
+        </details>
+      )}
     </section>
   )
 }

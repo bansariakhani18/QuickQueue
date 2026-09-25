@@ -1,13 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
 import { COUNTRIES, DEFAULT_DIAL_CODE } from '../phoneCountries'
 
 interface OrderCreateFormProps {
+  activeTokens?: Set<string>
   onCreated: () => void
   onUnauthorized: () => void
 }
 
-export function OrderCreateForm({ onCreated, onUnauthorized }: OrderCreateFormProps) {
+export function OrderCreateForm({
+  activeTokens,
+  onCreated,
+  onUnauthorized,
+}: OrderCreateFormProps) {
   const [displayToken, setDisplayToken] = useState('')
   const [countryDialCode, setCountryDialCode] = useState(DEFAULT_DIAL_CODE)
   const [nationalNumber, setNationalNumber] = useState('')
@@ -15,6 +20,16 @@ export function OrderCreateForm({ onCreated, onUnauthorized }: OrderCreateFormPr
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!success) return
+    const timer = setTimeout(() => setSuccess(null), 3000)
+    return () => clearTimeout(timer)
+  }, [success])
+
+  const isDuplicateInput =
+    displayToken.trim().length > 0 &&
+    (activeTokens?.has(displayToken.trim().toLowerCase()) ?? false)
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -42,7 +57,7 @@ export function OrderCreateForm({ onCreated, onUnauthorized }: OrderCreateFormPr
       })
       setDisplayToken('')
       setNationalNumber('')
-      setSuccess('Order created')
+      setSuccess('Order created successfully')
       onCreated()
     } catch (err) {
       if (err instanceof ApiError) {
@@ -64,6 +79,18 @@ export function OrderCreateForm({ onCreated, onUnauthorized }: OrderCreateFormPr
     }
   }
 
+  function handleTokenChange(val: string) {
+    if (success) setSuccess(null)
+    if (error) setError(null)
+    setDisplayToken(val)
+  }
+
+  function handlePhoneChange(val: string) {
+    if (success) setSuccess(null)
+    if (error) setError(null)
+    setNationalNumber(val)
+  }
+
   return (
     <form className="create-form" onSubmit={handleSubmit}>
       <div className="create-row">
@@ -77,14 +104,22 @@ export function OrderCreateForm({ onCreated, onUnauthorized }: OrderCreateFormPr
             autoFocus
             placeholder="e.g. 42"
             value={displayToken}
-            onChange={(e) => setDisplayToken(e.target.value)}
+            onChange={(e) => handleTokenChange(e.target.value)}
             required
           />
+          {isDuplicateInput && (
+            <span className="field-note field-note-info">
+              Notice: Token &ldquo;{displayToken.trim()}&rdquo; is already active on the board (duplicate allowed)
+            </span>
+          )}
         </div>
 
         <div className="field">
           <label htmlFor="create-phone">Customer WhatsApp phone</label>
           <div className="phone-field">
+            <label htmlFor="create-country" className="sr-only">
+              Country code
+            </label>
             <select
               id="create-country"
               aria-label="Country code"
@@ -104,7 +139,7 @@ export function OrderCreateForm({ onCreated, onUnauthorized }: OrderCreateFormPr
               autoComplete="off"
               placeholder="e.g. 98765 43210"
               value={nationalNumber}
-              onChange={(e) => setNationalNumber(e.target.value)}
+              onChange={(e) => handlePhoneChange(e.target.value)}
               required
             />
           </div>

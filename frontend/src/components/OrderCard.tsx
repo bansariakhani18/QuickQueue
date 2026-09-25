@@ -10,27 +10,44 @@ import {
 } from '../notification'
 import type { ActiveOrder } from '../types'
 
-function formatCreatedAt(iso: string): string {
+export function formatElapsedTime(iso: string, now: number): string {
   const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return iso
-  return date.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+  const diffMs = now - date.getTime()
+  if (Number.isNaN(diffMs) || diffMs < 0) return 'Just now'
+  const diffSec = Math.floor(diffMs / 1000)
+  if (diffSec < 60) return 'Just now'
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffHours = Math.floor(diffMin / 60)
+  const remMin = diffMin % 60
+  if (remMin === 0) return `${diffHours}h ago`
+  return `${diffHours}h ${remMin}m ago`
+}
+
+export function formatTimeOnly(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 }
 
 interface OrderCardProps {
   order: ActiveOrder
+  isDuplicateToken?: boolean
+  now?: number
+  onActionSuccess?: (message: string) => void
   onUnauthorized: () => void
 }
 
-export function OrderCard({ order, onUnauthorized }: OrderCardProps) {
+export function OrderCard({
+  order,
+  isDuplicateToken = false,
+  now,
+  onActionSuccess,
+  onUnauthorized,
+}: OrderCardProps) {
   const queryClient = useQueryClient()
   const [actionError, setActionError] = useState<string | null>(null)
+  const currentTime = now ?? Date.now()
 
   function refreshOrders() {
     queryClient.invalidateQueries({ queryKey: ['orders'] })
@@ -67,6 +84,7 @@ export function OrderCard({ order, onUnauthorized }: OrderCardProps) {
     onSuccess: () => {
       setActionError(null)
       refreshOrders()
+      onActionSuccess?.(`Order ${order.displayToken} marked collected`)
     },
     onError: handleMutationError,
   })
@@ -76,6 +94,7 @@ export function OrderCard({ order, onUnauthorized }: OrderCardProps) {
     onSuccess: () => {
       setActionError(null)
       refreshOrders()
+      onActionSuccess?.(`Order ${order.displayToken} cancelled`)
     },
     onError: handleMutationError,
   })
@@ -90,8 +109,10 @@ export function OrderCard({ order, onUnauthorized }: OrderCardProps) {
   })
 
   const anyPending =
-    readyMutation.isPending || collectedMutation.isPending ||
-    cancelMutation.isPending || recallMutation.isPending
+    readyMutation.isPending ||
+    collectedMutation.isPending ||
+    cancelMutation.isPending ||
+    recallMutation.isPending
 
   const attemptLabel = order.attemptNumber !== null ? `Attempt ${order.attemptNumber}` : null
   const notificationLabelValue = notificationLabel(order.notificationStatus)
@@ -99,27 +120,45 @@ export function OrderCard({ order, onUnauthorized }: OrderCardProps) {
   function renderNotification() {
     if (order.notificationStatus === null) {
       if (order.optOutActive) {
-        return <span className="notice">Customer previously opted out — notify manually</span>
+        return (
+          <div className="notif-badge notif-optout">
+            <span className="notif-prefix">Notification:</span>
+            <span className="notif-text">Customer previously opted out — notify manually</span>
+          </div>
+        )
       }
       if (!order.consentGiven) {
-        return <span className="notice">No WhatsApp consent — notify manually</span>
+        return (
+          <div className="notif-badge notif-noconsent">
+            <span className="notif-prefix">Notification:</span>
+            <span className="notif-text">No WhatsApp consent — notify manually</span>
+          </div>
+        )
       }
-      return <span className="notice">No notification yet</span>
-    }
-    const label = notificationLabelValue
-    if (order.notificationStatus === 'FAILED') {
       return (
-        <span className="notice notice-failed">
-          {failedMessage()}
-          {attemptLabel !== null ? ` (${attemptLabel})` : ''}
-        </span>
+        <div className="notif-badge notif-none">
+          <span className="notif-prefix">Notification:</span>
+          <span className="notif-text">No notification yet</span>
+        </div>
       )
     }
+
+    if (order.notificationStatus === 'FAILED') {
+      return (
+        <div className="notif-badge notif-failed" role="alert">
+          <span className="notif-prefix">Notification:</span>
+          <span className="notif-text">{failedMessage()}</span>
+          {attemptLabel !== null && <span className="notif-attempt">{attemptLabel}</span>}
+        </div>
+      )
+    }
+
     return (
-      <span className={`notice notice-status`}>
-        {label ?? order.notificationStatus}
-        {attemptLabel !== null ? ` (${attemptLabel})` : null}
-      </span>
+      <div className={`notif-badge notif-${order.notificationStatus.toLowerCase()}`}>
+        <span className="notif-prefix">Notification:</span>
+        <span className="notif-text">{notificationLabelValue ?? order.notificationStatus}</span>
+        {attemptLabel !== null && <span className="notif-attempt">{attemptLabel}</span>}
+      </div>
     )
   }
 
@@ -137,58 +176,76 @@ export function OrderCard({ order, onUnauthorized }: OrderCardProps) {
 
   return (
     <article className={`order order-${order.status.toLowerCase()}`}>
-      <div className="order-main">
-        <div className="order-token" aria-label={`Display token ${order.displayToken}`}>
-          {order.displayToken}
+      <div className="order-header">
+        <div className="order-token-group">
+          <div className="order-token-meta">
+            <span className="order-token-label">TOKEN</span>
+            {isDuplicateToken && (
+              <span className="badge badge-duplicate" title="Multiple active orders have this display token">
+                Duplicate token
+              </span>
+            )}
+          </div>
+          <div className="order-token" aria-label={`Display token ${order.displayToken}`}>
+            {order.displayToken}
+          </div>
         </div>
         <div className="order-status-area">
           <span className={`status-label status-${order.status.toLowerCase()}`}>
             {order.status}
           </span>
-          {renderNotification()}
         </div>
       </div>
 
-      <div className="order-detail">
-        {order.customerPhone !== null ? order.customerPhone : 'No phone'}
-        {order.optOutActive ? ' · opted out' : ''}
+      <div className="order-notification-row">
+        {renderNotification()}
       </div>
 
-      <div className="order-detail">Created {formatCreatedAt(order.createdAt)}</div>
+      <div className="order-meta">
+        <div className="order-meta-item order-time">
+          <span className="meta-icon" aria-hidden="true">⏱</span>
+          <span className="time-elapsed">Waiting {formatElapsedTime(order.createdAt, currentTime)}</span>
+          <span className="time-exact">({formatTimeOnly(order.createdAt)})</span>
+        </div>
+
+        <div className="order-meta-item order-phone">
+          <span className="meta-icon" aria-hidden="true">📞</span>
+          <span className="phone-number">{order.customerPhone !== null ? order.customerPhone : 'No phone'}</span>
+          {order.optOutActive && <span className="opt-out-badge">Opted out</span>}
+        </div>
+      </div>
 
       <div className="order-actions">
         {order.status === 'PREPARING' && (
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-ready"
             disabled={anyPending}
             onClick={() => readyMutation.mutate()}
           >
-            {readyMutation.isPending ? 'Marking ready…' : 'Ready'}
+            {readyMutation.isPending ? 'Marking ready…' : 'Mark Ready'}
           </button>
         )}
 
         {order.status === 'READY' && (
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-collect"
             disabled={anyPending}
             onClick={() => collectedMutation.mutate()}
           >
-            {collectedMutation.isPending ? 'Collecting…' : 'Collected'}
+            {collectedMutation.isPending ? 'Collecting…' : 'Mark Collected'}
           </button>
         )}
 
-        {(order.status === 'PREPARING' || order.status === 'READY') && (
-          <button
-            type="button"
-            className="btn btn-cancel"
-            disabled={anyPending}
-            onClick={() => cancelMutation.mutate()}
-          >
-            {cancelMutation.isPending ? 'Cancelling…' : 'Cancel'}
-          </button>
-        )}
+        <button
+          type="button"
+          className="btn btn-cancel"
+          disabled={anyPending}
+          onClick={() => cancelMutation.mutate()}
+        >
+          {cancelMutation.isPending ? 'Cancelling…' : 'Cancel'}
+        </button>
 
         {order.status === 'READY' && (
           <div className="recall-area">

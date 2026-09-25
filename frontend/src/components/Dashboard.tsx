@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../api'
 import { OrderCreateForm } from './OrderCreateForm'
 import { OrderCard } from './OrderCard'
@@ -16,12 +16,29 @@ interface DashboardProps {
 export function Dashboard({ user, onLogout, onUnauthorized }: DashboardProps) {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const queryClient = useQueryClient()
 
   useEffect(() => {
     const timeout = setTimeout(() => setDebouncedSearch(search), 300)
     return () => clearTimeout(timeout)
   }, [search])
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    if (!toastMessage) return
+    const timer = setTimeout(() => setToastMessage(null), 3500)
+    return () => clearTimeout(timer)
+  }, [toastMessage])
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg)
+  }, [])
 
   const ordersQuery = useOrders(debouncedSearch)
 
@@ -43,6 +60,29 @@ export function Dashboard({ user, onLogout, onUnauthorized }: DashboardProps) {
     },
   })
 
+  const orders = ordersQuery.data?.orders ?? []
+  const readyCount = orders.filter((o) => o.status === 'READY').length
+  const preparingCount = orders.filter((o) => o.status === 'PREPARING').length
+
+  const tokenCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const o of orders) {
+      const key = o.displayToken.trim().toLowerCase()
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return counts
+  }, [orders])
+
+  const activeTokens = useMemo(() => {
+    const set = new Set<string>()
+    for (const o of orders) {
+      set.add(o.displayToken.trim().toLowerCase())
+    }
+    return set
+  }, [orders])
+
+  const isFiltering = debouncedSearch.trim().length > 0
+
   return (
     <div className="dashboard">
       <header className="app-header">
@@ -60,24 +100,69 @@ export function Dashboard({ user, onLogout, onUnauthorized }: DashboardProps) {
         </div>
       </header>
 
+      {toastMessage !== null && (
+        <div className="action-toast" role="status" aria-live="polite">
+          <span className="toast-icon" aria-hidden="true">✓</span>
+          <span className="toast-text">{toastMessage}</span>
+        </div>
+      )}
+
       <main className="app-main">
         <WhatsAppConnectionPanel onUnauthorized={onUnauthorized} />
 
         <OrderCreateForm
+          activeTokens={activeTokens}
           onCreated={() => queryClient.invalidateQueries({ queryKey: ['orders'] })}
           onUnauthorized={onUnauthorized}
         />
 
         <section className="orders-section" aria-label="Active orders">
           <div className="orders-toolbar">
-            <h2>Active orders</h2>
-            <input
-              type="search"
-              placeholder="Search by token or phone"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+            <div className="orders-title-group">
+              <h2 className="orders-heading">Active orders</h2>
+              {!ordersQuery.isPending && (
+                <span className="orders-summary-pill">
+                  {orders.length} active · {readyCount} ready · {preparingCount} preparing
+                </span>
+              )}
+            </div>
+
+            <div className="search-wrapper">
+              <input
+                type="search"
+                className="search-input"
+                placeholder="Search by token or phone"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                aria-label="Search orders by token or phone"
+              />
+              {search.length > 0 && (
+                <button
+                  type="button"
+                  className="search-clear-btn"
+                  onClick={() => setSearch('')}
+                  aria-label="Clear search filter"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
           </div>
+
+          {isFiltering && (
+            <div className="search-filter-banner">
+              <span>
+                Showing {orders.length} matching order{orders.length === 1 ? '' : 's'} for &ldquo;{debouncedSearch.trim()}&rdquo;
+              </span>
+              <button
+                type="button"
+                className="btn-link btn-clear-filter"
+                onClick={() => setSearch('')}
+              >
+                Clear search
+              </button>
+            </div>
+          )}
 
           {ordersQuery.isPending && ordersQuery.isFetching && (
             <p className="state-note">Loading orders…</p>
@@ -93,16 +178,34 @@ export function Dashboard({ user, onLogout, onUnauthorized }: DashboardProps) {
               </div>
             )}
 
-          {!ordersQuery.isPending && ordersQuery.data !== undefined &&
-            ordersQuery.data.orders.length === 0 && (
-              <p className="state-note">No active orders right now.</p>
-            )}
+          {!ordersQuery.isPending && ordersQuery.data !== undefined && orders.length === 0 && (
+            <div className="empty-state-box">
+              {isFiltering ? (
+                <p className="state-note">
+                  No matching orders found for &ldquo;{debouncedSearch.trim()}&rdquo;.
+                </p>
+              ) : (
+                <p className="state-note">No active orders right now.</p>
+              )}
+            </div>
+          )}
 
-          {ordersQuery.data !== undefined && ordersQuery.data.orders.length > 0 && (
+          {orders.length > 0 && (
             <div className="orders-list">
-              {ordersQuery.data.orders.map((order) => (
-                <OrderCard key={order.id} order={order} onUnauthorized={onUnauthorized} />
-              ))}
+              {orders.map((order) => {
+                const key = order.displayToken.trim().toLowerCase()
+                const isDuplicate = (tokenCounts.get(key) ?? 0) > 1
+                return (
+                  <OrderCard
+                    key={order.id}
+                    order={order}
+                    isDuplicateToken={isDuplicate}
+                    now={now}
+                    onActionSuccess={showToast}
+                    onUnauthorized={onUnauthorized}
+                  />
+                )
+              })}
             </div>
           )}
         </section>
