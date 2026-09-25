@@ -1,5 +1,6 @@
 import { PrismaClient, Prisma } from '@prisma/client'
 import { parsePhoneNumberFromString } from 'libphonenumber-js'
+import { getTemplateIdentifierFromEnv } from './whatsappClient.js'
 
 const prisma = new PrismaClient()
 
@@ -190,6 +191,7 @@ export async function transitionOrderStatus(
           attemptNumber: 1,
           channel: 'WHATSAPP',
           jobStatus: 'PENDING',
+          templateIdentifierSnapshot: getTemplateIdentifierFromEnv(),
         },
       })
     }

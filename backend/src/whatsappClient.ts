@@ -58,6 +58,30 @@ export function getConfigFromEnv(): WhatsAppConfig | null {
   return { phoneNumberId, accessToken, templateName, templateLanguage, apiVersion }
 }
 
+export interface WhatsAppTemplateIdentity {
+  templateName: string
+  templateLanguage: string
+  apiVersion: string
+}
+
+export function getTemplateIdentityFromEnv(): WhatsAppTemplateIdentity | null {
+  const templateName = process.env.WHATSAPP_TEMPLATE_NAME?.trim() ?? ''
+  const templateLanguage = process.env.WHATSAPP_TEMPLATE_LANGUAGE?.trim() ?? ''
+  const apiVersion = process.env.WHATSAPP_API_VERSION?.trim() ?? ''
+
+  if (!templateName || !templateLanguage || !apiVersion) {
+    return null
+  }
+
+  return { templateName, templateLanguage, apiVersion }
+}
+
+export function getTemplateIdentifierFromEnv(): string | null {
+  const identity = getTemplateIdentityFromEnv()
+  if (!identity) return null
+  return `${identity.templateName}|${identity.templateLanguage}|${identity.apiVersion}`
+}
+
 function parseMetaError(body: unknown): MetaErrorInfo | undefined {
   if (typeof body !== 'object' || body === null) return undefined
   const errorField = (body as Record<string, unknown>).error
@@ -157,4 +181,58 @@ export async function sendWhatsAppTemplate(
   }
 
   return { providerMessageId }
+}
+
+export interface DisplayNameSubmissionInput {
+  apiVersion: string
+  wabaId: string
+  phoneNumberId: string
+  accessToken: string
+  requestedDisplayName: string
+}
+
+export type DisplayNameSubmissionResult =
+  | { status: 'APPROVED'; approvedDisplayName: string }
+  | { status: 'REJECTED'; rejectedDisplayName: string }
+
+export class DisplayNameRegistrationUnavailableError extends Error {
+  constructor(
+    message = 'Meta display-name registration is not implemented: the exact endpoint, request body, response fields, and approval semantics are an unvalidated External Validation Dependency (SRS Section 22). No Meta request is issued and no display name is claimed approved until the real contract is confirmed.',
+    options?: ErrorOptions,
+  ) {
+    super(message, options)
+    this.name = 'DisplayNameRegistrationUnavailableError'
+  }
+}
+
+export async function submitWhatsAppDisplayName(
+  _input: DisplayNameSubmissionInput,
+): Promise<DisplayNameSubmissionResult> {
+  throw new DisplayNameRegistrationUnavailableError()
+}
+
+export interface TemplateProvisioningInput {
+  apiVersion: string
+  wabaId: string
+  accessToken: string
+  templateName: string
+  templateLanguage: string
+}
+
+export type TemplateProvisioningResult = { status: 'PROVISIONED' } | { status: 'NOT_PROVISIONED' }
+
+export class TemplateProvisioningUnavailableError extends Error {
+  constructor(
+    message = 'WhatsApp template provisioning is not implemented: the exact endpoint, request body, response fields, and approval/creation semantics are an unvalidated External Validation Dependency (SRS Section 22). No Meta request is issued and no template is claimed provisioned until the real contract is confirmed.',
+    options?: ErrorOptions,
+  ) {
+    super(message, options)
+    this.name = 'TemplateProvisioningUnavailableError'
+  }
+}
+
+export async function submitWhatsAppTemplateProvisioning(
+  _input: TemplateProvisioningInput,
+): Promise<TemplateProvisioningResult> {
+  throw new TemplateProvisioningUnavailableError()
 }

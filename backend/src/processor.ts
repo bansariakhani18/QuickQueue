@@ -2,10 +2,14 @@ import { PrismaClient } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 import {
   getConfigFromEnv,
+  getTemplateIdentifierFromEnv,
+  getTemplateIdentityFromEnv,
   sendWhatsAppTemplate,
   WhatsAppApiError,
   type WhatsAppConfig,
 } from './whatsappClient.js'
+import { decryptToken } from './crypto.js'
+import type { EncryptedToken } from './crypto.js'
 
 const prisma = new PrismaClient()
 
@@ -62,6 +66,109 @@ export function createRealWhatsAppSender(config?: WhatsAppConfig): NotificationS
         to: payload.customerPhone,
         bodyParameters: [],
       })
+      return { providerMessageId: result.providerMessageId }
+    },
+  }
+}
+
+export type WhatsAppSenderUnavailableCode =
+  | 'CONNECTION_NOT_FOUND'
+  | 'CONNECTION_DISCONNECTED'
+  | 'CONNECTION_NOT_CONNECTED'
+  | 'MISSING_PHONE_NUMBER_ID'
+  | 'MISSING_ENCRYPTED_TOKEN'
+  | 'TOKEN_DECRYPTION_FAILED'
+  | 'TEMPLATE_CONFIG_MISSING'
+
+export class WhatsAppSenderUnavailableError extends Error {
+  readonly code: WhatsAppSenderUnavailableCode
+
+  constructor(code: WhatsAppSenderUnavailableCode, message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'WhatsAppSenderUnavailableError'
+    this.code = code
+  }
+}
+
+export async function resolveRestaurantWhatsAppCredentials(
+  restaurantId: string,
+): Promise<{ phoneNumberId: string; accessToken: string }> {
+  const connection = await prisma.whatsAppConnection.findUnique({ where: { restaurantId } })
+
+  if (!connection) {
+    throw new WhatsAppSenderUnavailableError(
+      'CONNECTION_NOT_FOUND',
+      `No WhatsApp connection found for restaurant ${restaurantId}`,
+    )
+  }
+  if (connection.connectionStatus === 'DISCONNECTED') {
+    throw new WhatsAppSenderUnavailableError(
+      'CONNECTION_DISCONNECTED',
+      `WhatsApp connection for restaurant ${restaurantId} is DISCONNECTED`,
+    )
+  }
+  if (connection.connectionStatus !== 'CONNECTED') {
+    throw new WhatsAppSenderUnavailableError(
+      'CONNECTION_NOT_CONNECTED',
+      `WhatsApp connection for restaurant ${restaurantId} is not CONNECTED`,
+    )
+  }
+  if (!connection.phoneNumberId) {
+    throw new WhatsAppSenderUnavailableError(
+      'MISSING_PHONE_NUMBER_ID',
+      `WhatsApp connection for restaurant ${restaurantId} has no phone number ID`,
+    )
+  }
+  if (!connection.accessTokenEncrypted) {
+    throw new WhatsAppSenderUnavailableError(
+      'MISSING_ENCRYPTED_TOKEN',
+      `WhatsApp connection for restaurant ${restaurantId} has no encrypted access token`,
+    )
+  }
+
+  let accessToken: string
+  try {
+    accessToken = decryptToken(connection.accessTokenEncrypted as EncryptedToken)
+  } catch (cause) {
+    throw new WhatsAppSenderUnavailableError(
+      'TOKEN_DECRYPTION_FAILED',
+      `Failed to decrypt WhatsApp access token for restaurant ${restaurantId}`,
+      { cause },
+    )
+  }
+
+  return { phoneNumberId: connection.phoneNumberId, accessToken }
+}
+
+export function createRestaurantAwareWhatsAppSender(): NotificationSender {
+  return {
+    async send(payload: NotificationPayload): Promise<NotificationSendResult> {
+      const template = getTemplateIdentityFromEnv()
+      if (!template) {
+        throw new WhatsAppSenderUnavailableError(
+          'TEMPLATE_CONFIG_MISSING',
+          'WhatsApp notification template configuration is missing',
+        )
+      }
+
+      const { phoneNumberId, accessToken } = await resolveRestaurantWhatsAppCredentials(
+        payload.restaurantId,
+      )
+
+      const result = await sendWhatsAppTemplate(
+        {
+          phoneNumberId,
+          accessToken,
+          templateName: template.templateName,
+          templateLanguage: template.templateLanguage,
+          apiVersion: template.apiVersion,
+        },
+        {
+          to: payload.customerPhone,
+          bodyParameters: [],
+        },
+      )
+
       return { providerMessageId: result.providerMessageId }
     },
   }
@@ -130,6 +237,14 @@ export function classifySendError(err: unknown): SendFailureInfo {
 
     const code = whatsappErrorCode(err)
     return { kind: 'unknown', errorCode: code ? `META_${code}` : `HTTP_${status}`, errorMessage: buildWhatsAppErrorMessage(err) }
+  }
+
+  if (err instanceof WhatsAppSenderUnavailableError) {
+    return {
+      kind: 'permanent',
+      errorCode: err.code,
+      errorMessage: err.message.slice(0, MAX_ERROR_MESSAGE_LENGTH),
+    }
   }
 
   const message = err instanceof Error ? err.message : String(err)
@@ -346,6 +461,7 @@ export async function recallOrder(
         attemptNumber: nextAttemptNumber,
         channel: 'WHATSAPP',
         jobStatus: 'PENDING',
+        templateIdentifierSnapshot: getTemplateIdentifierFromEnv(),
       },
     })
 

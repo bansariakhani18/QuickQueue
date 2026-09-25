@@ -4,6 +4,7 @@ import { sessionMiddleware, authRouter } from './auth.js'
 import { originValidation } from './origin.js'
 import { createRateLimiter } from './rateLimit.js'
 import { ordersRouter } from './ordersRouter.js'
+import { connectionsRouter } from './connectionsRouter.js'
 import { webhookRouter } from './webhook.js'
 
 const app = express()
@@ -39,5 +40,6 @@ app.post('/auth/login', loginRateLimiter)
 app.post('/auth/password-reset/request', resetRequestRateLimiter)
 app.use('/auth', authRouter)
 app.use('/orders', ordersRouter)
+app.use('/connections', connectionsRouter)
 
 export { app }
