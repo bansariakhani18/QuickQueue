@@ -332,6 +332,29 @@ describe('Orders', () => {
       expect(aSearchRes.status).toBe(200)
       expect(aSearchRes.body.orders).toHaveLength(0)
     })
+
+    it('ignores client-supplied restaurantId in POST /orders and scopes to authenticated session', async () => {
+      const spoofedRes = await request(app)
+        .post('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+        .send({
+          restaurantId: 'spoofed-restaurant-id',
+          displayToken: 'A-spoof',
+          customerPhone: '+14155557777',
+          consentGiven: true,
+        })
+
+      expect(spoofedRes.status).toBe(201)
+      const created = await prisma.order.findUnique({ where: { id: spoofedRes.body.id } })
+      expect(created!.restaurantId).not.toBe('spoofed-restaurant-id')
+
+      const aOrders = await request(app)
+        .get('/orders')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookieA)
+      expect(aOrders.body.orders.map((o: { id: string }) => o.id)).toContain(spoofedRes.body.id)
+    })
   })
 
   describe('Order status transitions (Phase 7)', () => {
@@ -577,6 +600,65 @@ describe('Orders', () => {
         expect(res.body.terminalAt).toBeDefined()
         expect(res.body.cancelledAt).toBeDefined()
       })
+
+      it('terminalAt is immutable: once COLLECTED, subsequent transition requests cannot alter terminalAt', async () => {
+        const order = await createOrderAs(cookieA, 'term-imm-1', '+14155557060')
+        await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        const collectedRes = await request(app)
+          .post(`/orders/${order.id}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(collectedRes.status).toBe(200)
+        const initialTerminalAt = collectedRes.body.terminalAt
+        expect(initialTerminalAt).toBeDefined()
+
+        const cancelRes = await request(app)
+          .post(`/orders/${order.id}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(cancelRes.status).toBe(409)
+
+        const readyRes = await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(readyRes.status).toBe(409)
+
+        const finalOrder = await prisma.order.findUnique({ where: { id: order.id } })
+        expect(finalOrder!.status).toBe('COLLECTED')
+        expect(finalOrder!.terminalAt?.toISOString()).toBe(new Date(initialTerminalAt).toISOString())
+      })
+
+      it('terminalAt is immutable: once CANCELLED, subsequent transition requests cannot alter terminalAt', async () => {
+        const order = await createOrderAs(cookieA, 'term-imm-2', '+14155557061')
+        const cancelRes = await request(app)
+          .post(`/orders/${order.id}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(cancelRes.status).toBe(200)
+        const initialTerminalAt = cancelRes.body.terminalAt
+        expect(initialTerminalAt).toBeDefined()
+
+        const readyRes = await request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(readyRes.status).toBe(409)
+
+        const collectedRes = await request(app)
+          .post(`/orders/${order.id}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(collectedRes.status).toBe(409)
+
+        const finalOrder = await prisma.order.findUnique({ where: { id: order.id } })
+        expect(finalOrder!.status).toBe('CANCELLED')
+        expect(finalOrder!.terminalAt?.toISOString()).toBe(new Date(initialTerminalAt).toISOString())
+      })
     })
 
     describe('Cross-tenant transition isolation', () => {
@@ -589,6 +671,68 @@ describe('Orders', () => {
           .set('Cookie', cookieA)
 
         expect(res.status).toBe(404)
+      })
+
+      it('restaurant A cannot mark restaurant B order as COLLECTED', async () => {
+        const bOrder = await createOrderAs(cookieB, 'cross-col', '+14155557041')
+
+        const res = await request(app)
+          .post(`/orders/${bOrder.id}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(404)
+      })
+
+      it('restaurant A cannot mark restaurant B order as CANCELLED', async () => {
+        const bOrder = await createOrderAs(cookieB, 'cross-can', '+14155557042')
+
+        const res = await request(app)
+          .post(`/orders/${bOrder.id}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(404)
+      })
+
+      it('restaurant A cannot RECALL restaurant B order', async () => {
+        const bOrder = await createOrderAs(cookieB, 'cross-rec', '+14155557043')
+
+        const res = await request(app)
+          .post(`/orders/${bOrder.id}/recall`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+
+        expect(res.status).toBe(409)
+        expect(res.body.error).toBe('Order not found')
+      })
+
+      it('transition request with guessed or non-existent order ID returns 404 or 409', async () => {
+        const guessedId = '00000000-0000-0000-0000-000000000000'
+
+        const resReady = await request(app)
+          .post(`/orders/${guessedId}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(resReady.status).toBe(404)
+
+        const resCollected = await request(app)
+          .post(`/orders/${guessedId}/collected`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(resCollected.status).toBe(404)
+
+        const resCancel = await request(app)
+          .post(`/orders/${guessedId}/cancel`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(resCancel.status).toBe(404)
+
+        const resRecall = await request(app)
+          .post(`/orders/${guessedId}/recall`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA)
+        expect(resRecall.status).toBe(409)
       })
     })
 
@@ -745,6 +889,31 @@ describe('Orders', () => {
         .post(`/orders/${order.id}/ready`)
         .set('Origin', ORIGIN)
         .set('Cookie', cookieA)
+
+      const attempts = await prisma.notificationAttempt.findMany({
+        where: { orderId: order.id },
+      })
+      expect(attempts).toHaveLength(1)
+    })
+
+    it('concurrent READY requests do not create duplicate attempts (AC-011)', async () => {
+      const order = await createOrderAs(cookieA, 'nfy-conc', '+14155557065')
+
+      const [res1, res2] = await Promise.all([
+        request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA),
+        request(app)
+          .post(`/orders/${order.id}/ready`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', cookieA),
+      ])
+
+      expect(res1.status).toBe(200)
+      expect(res2.status).toBe(200)
+      expect(res1.body.status).toBe('READY')
+      expect(res2.body.status).toBe('READY')
 
       const attempts = await prisma.notificationAttempt.findMany({
         where: { orderId: order.id },

@@ -156,6 +156,19 @@ export function createRestaurantAwareWhatsAppSender(): NotificationSender {
         payload.restaurantId,
       )
 
+      const order = await prisma.order.findUnique({
+        where: { id: payload.orderId },
+        select: {
+          displayToken: true,
+          restaurant: { select: { name: true } },
+        },
+      })
+
+      const bodyParameters =
+        order && order.displayToken && order.restaurant?.name
+          ? [order.displayToken, order.restaurant.name]
+          : []
+
       const result = await sendWhatsAppTemplate(
         {
           phoneNumberId,
@@ -166,7 +179,7 @@ export function createRestaurantAwareWhatsAppSender(): NotificationSender {
         },
         {
           to: payload.customerPhone,
-          bodyParameters: [],
+          bodyParameters,
         },
       )
 
@@ -321,12 +334,22 @@ async function processAttempt(attemptId: string): Promise<void> {
 
   try {
     const result = await getNotificationSender().send(payload)
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: attempt.order.restaurantId },
+      select: { name: true },
+    })
+    const renderedMessageSnapshot =
+      attempt.order.displayToken && restaurant?.name
+        ? `Your order ${attempt.order.displayToken} at ${restaurant.name} is ready for pickup!`
+        : null
+
     await prisma.notificationAttempt.update({
       where: { id: attemptId },
       data: {
         jobStatus: 'SENT',
         sentAt: new Date(),
         providerMessageId: result.providerMessageId,
+        renderedMessageSnapshot,
         errorCode: null,
         errorMessage: null,
       },

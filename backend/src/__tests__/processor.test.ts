@@ -560,6 +560,46 @@ describe('Phase 10 — Retry Classification and RECALL', () => {
       await prisma.restaurant.delete({ where: { id: restaurant.id } })
     })
 
+    it('should reject when order status is COLLECTED', async () => {
+      const restaurant = await createRestaurant(`recall-col-${Date.now()}@ex.com`)
+      const order = await prisma.order.create({
+        data: {
+          restaurantId: restaurant.id,
+          displayToken: `recall-col-${Date.now()}`,
+          customerPhone: '+14155558410',
+          consentGiven: true,
+          consentMethod: 'VERBAL_STAFF_CONFIRMED',
+          status: 'COLLECTED',
+        },
+      })
+      await createAttempt(order.id)
+
+      await expect(recallOrder(restaurant.id, order.id)).rejects.toThrow('Order must be READY to recall')
+
+      await prisma.order.delete({ where: { id: order.id } })
+      await prisma.restaurant.delete({ where: { id: restaurant.id } })
+    })
+
+    it('should reject when order status is CANCELLED', async () => {
+      const restaurant = await createRestaurant(`recall-can-${Date.now()}@ex.com`)
+      const order = await prisma.order.create({
+        data: {
+          restaurantId: restaurant.id,
+          displayToken: `recall-can-${Date.now()}`,
+          customerPhone: '+14155558411',
+          consentGiven: true,
+          consentMethod: 'VERBAL_STAFF_CONFIRMED',
+          status: 'CANCELLED',
+        },
+      })
+      await createAttempt(order.id)
+
+      await expect(recallOrder(restaurant.id, order.id)).rejects.toThrow('Order must be READY to recall')
+
+      await prisma.order.delete({ where: { id: order.id } })
+      await prisma.restaurant.delete({ where: { id: restaurant.id } })
+    })
+
     it('should reject when order has an active PENDING attempt', async () => {
       const restaurant = await createRestaurant(`recall-pend-${Date.now()}@ex.com`)
       const order = await createOrder(restaurant.id, '+14155558401')
@@ -862,6 +902,7 @@ describe('Phase 11 — Retention / Phone Scrubbing', () => {
   }
 
   it('should scrub phone for order past retention window', async () => {
+    await scrubExpiredPhones(72)
     const restaurant = await createRestaurant(`scrub-past-${Date.now()}@ex.com`)
     const order = await createOrder(restaurant.id, '+14155559001')
 

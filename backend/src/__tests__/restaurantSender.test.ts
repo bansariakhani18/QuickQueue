@@ -159,7 +159,10 @@ describe('Per-restaurant WhatsApp sender (Phase 15 step 3)', () => {
         templateLanguage: TEMPLATE_LANGUAGE,
         apiVersion: API_VERSION,
       },
-      { to: '+14155558001', bodyParameters: [] },
+      {
+        to: '+14155558001',
+        bodyParameters: [order.displayToken, restaurant.name],
+      },
     )
 
     await cleanup(restaurant, order, connection)
@@ -187,7 +190,10 @@ describe('Per-restaurant WhatsApp sender (Phase 15 step 3)', () => {
         templateLanguage: TEMPLATE_LANGUAGE,
         apiVersion: API_VERSION,
       },
-      { to: '+14155558002', bodyParameters: [] },
+      {
+        to: '+14155558002',
+        bodyParameters: [order.displayToken, restaurant.name],
+      },
     )
     expect(sendWhatsAppTemplate).not.toHaveBeenCalledWith(
       expect.objectContaining({ phoneNumberId: '1226137183925646', accessToken: 'EAAXtest-restaurant-a-secret' }),

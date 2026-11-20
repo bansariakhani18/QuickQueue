@@ -5,7 +5,7 @@ import {
   startProcessor,
 } from './processor.js'
 
-const port = Number.parseInt(process.env.BACKEND_PORT ?? '3000', 10)
+const port = Number.parseInt(process.env.PORT ?? process.env.BACKEND_PORT ?? '3000', 10)
 
 setNotificationSender(createRestaurantAwareWhatsAppSender())
 startProcessor()
