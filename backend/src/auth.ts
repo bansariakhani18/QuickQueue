@@ -22,12 +22,14 @@ declare module 'express-serve-static-core' {
 const SESSION_SECRET = process.env.SESSION_SECRET ?? 'dev-session-secret-do-not-use-in-production'
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000 // 24 hours
 
+const isProduction = process.env.NODE_ENV === 'production'
+
 export const sessionMiddleware = cookieSession({
   name: 'session',
   keys: [SESSION_SECRET],
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
+  secure: isProduction,
+  sameSite: isProduction ? 'none' : 'lax',
   maxAge: SESSION_MAX_AGE_MS,
 })
 

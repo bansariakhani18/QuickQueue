@@ -8,6 +8,7 @@ import { connectionsRouter } from './connectionsRouter.js'
 import { webhookRouter } from './webhook.js'
 
 const app = express()
+app.set('trust proxy', 1)
 const prisma = new PrismaClient()
 
 const loginRateLimiter = createRateLimiter({

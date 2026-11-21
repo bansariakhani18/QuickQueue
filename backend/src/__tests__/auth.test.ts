@@ -455,6 +455,20 @@ describe('Auth', () => {
       const res = await request(app).get('/health')
       expect(res.status).toBe(200)
     })
+
+    it('should handle CORS OPTIONS preflight request with allowed origin', async () => {
+      const res = await request(app)
+        .options('/orders')
+        .set('Origin', ORIGIN)
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'Content-Type')
+
+      expect(res.status).toBe(204)
+      expect(res.headers['access-control-allow-origin']).toBe(ORIGIN)
+      expect(res.headers['access-control-allow-credentials']).toBe('true')
+      expect(res.headers['access-control-allow-methods']).toBeDefined()
+      expect(res.headers['access-control-allow-headers']).toContain('Content-Type')
+    })
   })
 
   describe('Rate limiting (FR-008)', () => {
