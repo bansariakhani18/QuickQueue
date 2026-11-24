@@ -30,3 +30,17 @@ export function useSessionProbe() {
     },
   })
 }
+
+export function useCurrentUser() {
+  return useQuery({
+    queryKey: ['current-user'],
+    queryFn: () => api.getMe(),
+    staleTime: 60_000,
+    retry: (failureCount, error) => {
+      if (error instanceof Error && 'status' in error && (error as { status: number }).status === 401) {
+        return false
+      }
+      return failureCount < 2
+    },
+  })
+}

@@ -1,11 +1,12 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApiError } from './api'
 import { LoginScreen } from './components/LoginScreen'
 import { ResetConfirmScreen, ResetRequestScreen } from './components/PasswordResetScreen'
 import { SignupScreen } from './components/SignupScreen'
 import { Dashboard } from './components/Dashboard'
-import { useSessionProbe } from './hooks/useOrders'
+import { Logo } from './components/Logo'
+import { useSessionProbe, useCurrentUser } from './hooks/useOrders'
 import type { RestaurantUser } from './types'
 
 type AuthState = 'unknown' | 'yes' | 'no' | 'unreachable'
@@ -21,15 +22,31 @@ export function App() {
   const [authOverride, setAuthOverride] = useState<AuthState | null>(null)
   const [showResetRequest, setShowResetRequest] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
-  const [user, setUser] = useState<RestaurantUser | null>(null)
+  const [localUser, setLocalUser] = useState<RestaurantUser | null>(null)
   const [resetToken, setResetToken] = useState<string | null>(() => readResetToken())
 
   const onUnauthorized = useCallback(() => {
-    setUser(null)
+    setLocalUser(null)
     setAuthOverride('no')
   }, [])
 
   const sessionProbe = useSessionProbe()
+  const currentUserQuery = useCurrentUser()
+
+  // Prefer server-fetched user; fall back to locally-set user from login/signup
+  const user = currentUserQuery.data ?? localUser
+
+  // If currentUser 401s, force logout
+  useEffect(() => {
+    if (
+      currentUserQuery.error instanceof ApiError &&
+      currentUserQuery.error.status === 401 &&
+      authOverride === 'yes'
+    ) {
+      setLocalUser(null)
+      setAuthOverride('no')
+    }
+  }, [currentUserQuery.error, authOverride])
 
   if (resetToken !== null) {
     return (
@@ -44,7 +61,7 @@ export function App() {
             window.history.replaceState({}, '', newUrl)
           }
           setResetToken(null)
-          setUser(null)
+          setLocalUser(null)
           setAuthOverride('no')
         }}
       />
@@ -59,10 +76,11 @@ export function App() {
     return (
       <SignupScreen
         onSignedUp={(newUser) => {
-          setUser(newUser)
+          setLocalUser(newUser)
           setAuthOverride('yes')
           setShowRegister(false)
           queryClient.invalidateQueries({ queryKey: ['session'] })
+          queryClient.invalidateQueries({ queryKey: ['current-user'] })
         }}
         onBackToLogin={() => setShowRegister(false)}
       />
@@ -96,9 +114,10 @@ export function App() {
     return (
       <LoginScreen
         onLogin={(loggedInUser) => {
-          setUser(loggedInUser)
+          setLocalUser(loggedInUser)
           setAuthOverride('yes')
           queryClient.invalidateQueries({ queryKey: ['session'] })
+          queryClient.invalidateQueries({ queryKey: ['current-user'] })
         }}
         onForgotPassword={() => setShowResetRequest(true)}
         onRegister={() => setShowRegister(true)}
@@ -110,7 +129,9 @@ export function App() {
     return (
       <div className="auth-shell">
         <div className="auth-card">
-          <h1 className="brand">QuickQueue</h1>
+          <div className="auth-brand-center">
+            <Logo size={40} />
+          </div>
           <p className="alert alert-error" role="alert">
             Could not reach the server. Make sure the backend is running, then try again.
           </p>
@@ -126,8 +147,9 @@ export function App() {
     <Dashboard
       user={user}
       onLogout={() => {
-        setUser(null)
+        setLocalUser(null)
         setAuthOverride('no')
+        queryClient.removeQueries({ queryKey: ['current-user'] })
       }}
       onUnauthorized={onUnauthorized}
     />

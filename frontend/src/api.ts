@@ -69,6 +69,10 @@ export const api = {
     return post<{ message: string }>('/auth/logout')
   },
 
+  getMe(): Promise<RestaurantUser> {
+    return request<RestaurantUser>('/auth/me')
+  },
+
   getConnectionStatus(): Promise<ConnectionStatusInfo> {
     return request<ConnectionStatusInfo>('/connections/status')
   },

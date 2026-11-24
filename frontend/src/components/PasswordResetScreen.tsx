@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api, ApiError } from '../api'
+import { Logo } from './Logo'
 
 interface ResetRequestScreenProps {
   onBackToLogin: () => void
@@ -30,7 +31,9 @@ export function ResetRequestScreen({ onBackToLogin }: ResetRequestScreenProps) {
   return (
     <div className="auth-shell">
       <form className="auth-card" onSubmit={handleSubmit}>
-        <h1 className="brand">QuickQueue</h1>
+        <div className="auth-brand-center">
+          <Logo size={40} />
+        </div>
         <p className="auth-intro">Reset your password</p>
 
         {message !== null && <p className="alert alert-success" role="status">{message}</p>}
@@ -90,7 +93,9 @@ export function ResetConfirmScreen({ token, onDone }: ResetConfirmScreenProps) {
   return (
     <div className="auth-shell">
       <form className="auth-card" onSubmit={handleSubmit}>
-        <h1 className="brand">QuickQueue</h1>
+        <div className="auth-brand-center">
+          <Logo size={40} />
+        </div>
         <p className="auth-intro">Choose a new password</p>
 
         {message !== null && <p className="alert alert-success" role="status">{message}</p>}

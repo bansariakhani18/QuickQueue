@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api, ApiError } from '../api'
+import { Logo } from './Logo'
 import type { RestaurantUser } from '../types'
 
 interface LoginScreenProps {
@@ -32,7 +33,9 @@ export function LoginScreen({ onLogin, onForgotPassword, onRegister }: LoginScre
   return (
     <div className="auth-shell">
       <form className="auth-card" onSubmit={handleSubmit}>
-        <h1 className="brand">QuickQueue</h1>
+        <div className="auth-brand-center">
+          <Logo size={40} />
+        </div>
         <p className="auth-intro">Staff sign-in</p>
 
         {error !== null && <p className="alert alert-error" role="alert">{error}</p>}

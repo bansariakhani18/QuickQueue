@@ -106,11 +106,19 @@ export async function listActiveOrders(
   }
 
   if (options?.search) {
-    const searchTerm = options.search.trim()
-    where.OR = [
-      { displayToken: searchTerm },
-      { customerPhone: searchTerm },
-    ]
+    const rawSearch = options.search.trim()
+    const digitsOnly = rawSearch.replace(/\D/g, '')
+
+    const orConditions: Prisma.OrderWhereInput[] = [{ displayToken: rawSearch }]
+
+    if (rawSearch.startsWith('+')) {
+      orConditions.push({ customerPhone: rawSearch })
+    }
+    if (digitsOnly.length > 0) {
+      orConditions.push({ customerPhone: { contains: digitsOnly } })
+    }
+
+    where.OR = orConditions
   }
 
   const orders = await prisma.order.findMany({

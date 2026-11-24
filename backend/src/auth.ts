@@ -175,6 +175,28 @@ authRouter.post('/logout', (_req: Request, res: Response) => {
   res.status(200).json({ message: 'Logged out' })
 })
 
+authRouter.get('/me', requireAuth, (req: Request, res: Response) => {
+  const session = req.session as SessionData
+  prisma.restaurant
+    .findUnique({ where: { id: session.restaurantId } })
+    .then((restaurant) => {
+      if (!restaurant) {
+        req.session = null
+        res.status(401).json({ error: 'Not authenticated' })
+        return
+      }
+      res.status(200).json({
+        id: restaurant.id,
+        name: restaurant.name,
+        email: restaurant.email,
+      })
+    })
+    .catch((err) => {
+      console.error('Auth /me error:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    })
+})
+
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000 // 1 hour
 
 function hashToken(token: string): string {
