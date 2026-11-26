@@ -229,6 +229,5 @@ See [backend/prisma/schema.prisma](backend/prisma/schema.prisma) for the full sc
 
 ---
 
-## License
 
-Private — not open-source.
+
